@@ -76,9 +76,19 @@ async def on_startup():
             for i, (url, status, min_b) in enumerate(default_urls, start=1):
                 tu = TestUrl(url=url, expect_status=status, min_body_bytes=min_b, position=i)
                 session.add(tu)
+
+            # Default subscriptions (Mix, VLESS, Hysteria2)
+            default_subs = [
+                "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub1.txt",
+                "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/normal/mix",
+                "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vless",
+                "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/hysteria2",
+            ]
+            for sub_url in default_subs:
+                session.add(Subscription(url=sub_url))
                 
             session.commit()
-            logger.info("Created default settings and strict test URLs")
+            logger.info("Created default settings, test URLs, and subscriptions")
     # Start the scheduler background loop
     start_scheduler()
 

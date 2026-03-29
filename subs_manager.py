@@ -2,7 +2,6 @@
 
 import base64
 import logging
-from urllib.parse import urlparse
 
 import httpx
 from sqlmodel import Session, select
@@ -40,7 +39,7 @@ async def fetch_and_parse_subscriptions() -> list[str]:
     with Session(engine) as session:
         subs = session.exec(select(Subscription)).all()
 
-    all_vless: list[str] = []
+    all_proxies: list[str] = []
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(15.0),
@@ -63,13 +62,13 @@ async def fetch_and_parse_subscriptions() -> list[str]:
                     proxy_links = _extract_proxy_links(raw_text)
 
                 if proxy_links:
-                    all_vless.extend(proxy_links)
+                    all_proxies.extend(proxy_links)
                     logger.info(f"Found {len(proxy_links)} proxy links in {sub.url}")
 
             except Exception as e:
                 logger.warning(f"Failed to fetch {sub.url}: {e}")
 
     # Deduplicate
-    unique = list(dict.fromkeys(all_vless))
-    logger.info(f"Total unique VLESS links: {len(unique)}")
+    unique = list(dict.fromkeys(all_proxies))
+    logger.info(f"Total unique Proxy links: {len(unique)}")
     return unique
