@@ -8,11 +8,24 @@ from sqlmodel import Field, SQLModel, create_engine, Session
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
 
+from sqlalchemy import event
+
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    connect_args={"check_same_thread": False},
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 15.0,  # Wait up to 15 seconds for locks to clear safely
+    },
 )
+
+# Enable WAL mode for concurrent reads/writes (Zero-downtime webhook fix)
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 
 class Subscription(SQLModel, table=True):

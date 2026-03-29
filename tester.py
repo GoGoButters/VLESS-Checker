@@ -200,20 +200,9 @@ async def run_full_test(proxy_links: list[str]) -> list[tuple[str, int, int, int
         logger.warning("No test URLs configured — skipping test")
         return []
 
-    # Deduplicate proxies by host:port
-    unique_links = []
-    seen_endpoints = set()
-    for link in proxy_links:
-        hp = extract_host_port(link)
-        if not hp:
-            continue
-        endpoint = f"{hp[0]}:{hp[1]}"
-        if endpoint not in seen_endpoints:
-            seen_endpoints.add(endpoint)
-            unique_links.append(link)
-
+    # Deduplicate proxies by EXACT matching string (many CDNs share the same host/port)
     original_count = len(proxy_links)
-    proxy_links = unique_links
+    proxy_links = list(dict.fromkeys(proxy_links))
     logger.info(f"Deduplication: {len(proxy_links)} unique proxies remaining (from {original_count})")
 
     test_status["running"] = True
