@@ -10,7 +10,7 @@ services:
       - vpn_data:/app/data
     restart: unless-stopped
     environment:
-      - XRAY_PATH=/usr/local/bin/xray
+      - SINGBOX_PATH=/usr/local/bin/sing-box
       - PYTHONUNBUFFERED=1
 
 volumes:

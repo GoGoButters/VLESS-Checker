@@ -2,7 +2,7 @@
 
 import base64
 import logging
-from urllib.parse import unquote
+from urllib.parse import urlparse
 
 import httpx
 from sqlmodel import Session, select
@@ -24,12 +24,13 @@ def _decode_base64(data: str) -> str:
         return ""
 
 
-def _extract_vless_links(text: str) -> list[str]:
-    """Extract all vless:// links from text."""
+def _extract_proxy_links(text: str) -> list[str]:
+    """Extract all supported proxy links from text."""
     links = []
+    protocols = ("vless://", "vmess://", "trojan://", "ss://", "hy2://", "hysteria2://")
     for line in text.split("\n"):
         line = line.strip()
-        if line.startswith("vless://"):
+        if line.startswith(protocols):
             links.append(line)
     return links
 
@@ -55,14 +56,15 @@ async def fetch_and_parse_subscriptions() -> list[str]:
 
                 # Try base64 decode first
                 decoded = _decode_base64(raw_text)
-                vless_links = _extract_vless_links(decoded)
+                proxy_links = _extract_proxy_links(decoded)
 
                 # If no links found via base64, try raw text
-                if not vless_links:
-                    vless_links = _extract_vless_links(raw_text)
+                if not proxy_links:
+                    proxy_links = _extract_proxy_links(raw_text)
 
-                logger.info(f"Found {len(vless_links)} VLESS links from {sub.url}")
-                all_vless.extend(vless_links)
+                if proxy_links:
+                    all_vless.extend(proxy_links)
+                    logger.info(f"Found {len(proxy_links)} proxy links in {sub.url}")
 
             except Exception as e:
                 logger.warning(f"Failed to fetch {sub.url}: {e}")

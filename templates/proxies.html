@@ -5,7 +5,7 @@
 <div class="flex items-center justify-between mb-8">
     <div>
         <h1 class="text-3xl font-bold text-white">Valid Proxies</h1>
-        <p class="text-slate-400 mt-1">Working VLESS configs ranked by tests passed (↓) then latency (↑)</p>
+        <p class="text-slate-400 mt-1">Working Proxy configs ranked by tests passed (↓) then latency (↑)</p>
     </div>
     <span class="px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-semibold">
         {{ proxies|length }} working
@@ -18,7 +18,7 @@
         <thead>
             <tr class="border-b border-slate-700/30">
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12">#</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">VLESS Config</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Proxy Config</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Tests</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Ping</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-40">Tested</th>
@@ -31,7 +31,7 @@
                 <td class="px-6 py-4">
                     <div class="flex items-center gap-3">
                         <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
-                        <span class="text-sm text-slate-200 truncate max-w-2xl font-mono">{{ proxy.raw_vless[:80] }}{% if proxy.raw_vless|length > 80 %}…{% endif %}</span>
+                        <span class="text-sm text-slate-200 truncate max-w-2xl font-mono">{{ proxy.raw_url[:80] }}{% if proxy.raw_url|length > 80 %}…{% endif %}</span>
                     </div>
                 </td>
                 <td class="px-6 py-4">

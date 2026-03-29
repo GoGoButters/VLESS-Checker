@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import text
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
@@ -21,10 +22,10 @@ class Subscription(SQLModel, table=True):
     added_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
-class ValidProxy(SQLModel, table=True):
-    __tablename__ = "valid_proxies"
+class ProxyResult(SQLModel, table=True):
+    __tablename__ = "proxy_results"
     id: Optional[int] = Field(default=None, primary_key=True)
-    raw_vless: str = Field(unique=True, index=True)
+    raw_url: str = Field(unique=True, index=True)
     ping_ms: int = Field(default=0)
     tests_passed: int = Field(default=0)
     tests_total: int = Field(default=0)
@@ -81,19 +82,15 @@ def _migrate_db():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
 
-        # ValidProxy migrations
-        cursor = conn.execute("PRAGMA table_info(valid_proxies)")
-        existing = {row[1] for row in cursor.fetchall()}
-        proxy_migrations = [
-            ("tests_passed", "INTEGER DEFAULT 0"),
-            ("tests_total", "INTEGER DEFAULT 0"),
-        ]
-        for col_name, col_def in proxy_migrations:
-            if col_name not in existing:
-                conn.execute(f"ALTER TABLE valid_proxies ADD COLUMN {col_name} {col_def}")
-
         conn.commit()
         conn.close()
+        
+        with engine.begin() as conn:
+            try:
+                # Drop old vless table if exists (starting fresh for multi-protocol)
+                conn.execute(text("DROP TABLE IF EXISTS valid_proxies"))
+            except Exception:
+                pass
     except Exception:
         pass  # table doesn't exist yet — create_all will handle it
 

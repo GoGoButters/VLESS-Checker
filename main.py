@@ -12,7 +12,7 @@ from database import (
     create_db_and_tables,
     engine,
     Subscription,
-    ValidProxy,
+    ProxyResult,
     Settings,
     TestUrl,
 )
@@ -24,7 +24,8 @@ from auth import (
     SESSION_COOKIE,
 )
 from subs_manager import fetch_and_parse_subscriptions
-from tester import run_full_test, test_status, _replace_vless_remark
+from tester import run_full_test, test_status
+from proxy_parsers import replace_proxy_remark
 from scheduler import start_scheduler, scheduler_status
 
 # ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ async def dashboard(request: Request):
 
     with Session(engine) as session:
         sub_count = session.exec(select(func.count(Subscription.id))).one()
-        proxy_count = session.exec(select(func.count(ValidProxy.id))).one()
+        proxy_count = session.exec(select(func.count(ProxyResult.id))).one()
         test_url_count = session.exec(select(func.count(TestUrl.id))).one()
         settings = session.exec(select(Settings)).first()
 
@@ -299,7 +300,7 @@ async def proxies_page(request: Request):
         return RedirectResponse("/login", status_code=302)
     with Session(engine) as session:
         proxies = session.exec(
-            select(ValidProxy).order_by(ValidProxy.tests_passed.desc(), ValidProxy.ping_ms)
+            select(ProxyResult).order_by(ProxyResult.tests_passed.desc(), ProxyResult.ping_ms)
         ).all()
     return templates.TemplateResponse(request, "proxies.html", {
         "user": user,
@@ -364,9 +365,9 @@ async def webhook_output(secret_path: str):
         settings = session.exec(select(Settings)).first()
         if not settings or secret_path != settings.webhook_secret_path:
             raise HTTPException(status_code=404)
-        query = select(ValidProxy).order_by(
-            ValidProxy.tests_passed.desc(),
-            ValidProxy.ping_ms,
+        query = select(ProxyResult).order_by(
+            ProxyResult.tests_passed.desc(),
+            ProxyResult.ping_ms,
         )
         if settings.webhook_max_proxies > 0:
             query = query.limit(settings.webhook_max_proxies)
@@ -375,7 +376,7 @@ async def webhook_output(secret_path: str):
     # Rename configs: replace remark with sequential numbers
     lines = []
     for i, p in enumerate(proxies, start=1):
-        renamed = _replace_vless_remark(p.raw_vless, str(i))
+        renamed = replace_proxy_remark(p.raw_url, str(i))
         lines.append(renamed)
 
     text = "\n".join(lines)
