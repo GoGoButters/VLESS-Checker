@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — VPN Checker{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-white">Dashboard</h1>
+    <p class="text-slate-400 mt-1">Overview of your proxy aggregation pipeline</p>
+</div>
+
+<!-- Stats Grid -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+    <!-- Subscriptions -->
+    <div class="stat-card glass rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                </svg>
+            </div>
+        </div>
+        <div class="text-3xl font-bold text-white">{{ sub_count }}</div>
+        <div class="text-sm text-slate-400 mt-1">Subscriptions</div>
+    </div>
+
+    <!-- Valid Proxies -->
+    <div class="stat-card glass rounded-2xl p-6 glow-emerald">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                </svg>
+            </div>
+        </div>
+        <div class="text-3xl font-bold text-emerald-400">{{ proxy_count }}</div>
+        <div class="text-sm text-slate-400 mt-1">Valid Proxies</div>
+    </div>
+
+    <!-- Ping Threshold -->
+    <div class="stat-card glass rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+            </div>
+        </div>
+        <div class="text-3xl font-bold text-white">{{ settings.ping_threshold_ms }}<span class="text-lg text-slate-400 font-normal">ms</span></div>
+        <div class="text-sm text-slate-400 mt-1">Ping Threshold</div>
+    </div>
+
+    <!-- Test URLs -->
+    <div class="stat-card glass rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                </svg>
+            </div>
+        </div>
+        <div class="text-3xl font-bold text-white">{{ test_url_count }}</div>
+        <div class="text-sm text-slate-400 mt-1">Test URLs</div>
+    </div>
+</div>
+
+<!-- Scheduler Status -->
+<div class="glass rounded-2xl p-6 mb-8">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div class="flex items-center gap-4">
+            <div class="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+            </div>
+            <div>
+                <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                    Scheduler
+                    <span id="scheduler-badge" class="text-xs font-medium px-2 py-0.5 rounded-full
+                        {% if settings.schedule_interval_minutes > 0 %}
+                            bg-cyan-500/15 text-cyan-400 border border-cyan-500/20
+                        {% else %}
+                            bg-slate-500/15 text-slate-400 border border-slate-500/20
+                        {% endif %}">
+                        {% if settings.schedule_interval_minutes > 0 %}
+                            Every {{ settings.schedule_interval_minutes }} min
+                        {% else %}
+                            Disabled
+                        {% endif %}
+                    </span>
+                </h2>
+                <p id="scheduler-next" class="text-sm text-slate-400 mt-0.5">
+                    {% if settings.schedule_interval_minutes > 0 %}
+                        Waiting for next run…
+                    {% else %}
+                        Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-run tests.
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Test Control -->
+<div class="glass rounded-2xl p-6 mb-8 glow-accent">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+            <h2 class="text-xl font-semibold text-white flex items-center gap-3">
+                Proxy Test Engine
+                {% if test_status.running %}
+                <span class="flex items-center gap-2 text-sm font-normal text-amber-400">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 pulse-dot"></span>
+                    Running
+                </span>
+                {% else %}
+                <span class="flex items-center gap-2 text-sm font-normal text-slate-500">
+                    <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+                    Idle
+                </span>
+                {% endif %}
+            </h2>
+            <p class="text-sm text-slate-400 mt-1">Fetch subscriptions → TCP ping → check all test URLs → rank by score</p>
+        </div>
+        <form method="POST" action="/run-test">
+            <button type="submit" id="btn-run-test"
+                class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2 {% if test_status.running %}opacity-50 cursor-not-allowed{% endif %}"
+                {% if test_status.running %}disabled{% endif %}>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                Run Full Test
+            </button>
+        </form>
+    </div>
+
+    <!-- Progress bar -->
+    <div id="progress-section" class="mt-6 {% if not test_status.running %}hidden{% endif %}">
+        <div class="flex items-center justify-between text-sm mb-2">
+            <span class="text-slate-400">Phase: <span id="test-phase" class="text-white font-medium">{{ test_status.current_phase }}</span></span>
+            <span class="text-slate-400"><span id="test-checked" class="text-white">{{ test_status.checked }}</span> / <span id="test-total" class="text-white">{{ test_status.total }}</span> checked</span>
+        </div>
+        <div class="w-full h-2 bg-slate-700/50 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
+                style="width: {% if test_status.total > 0 %}{{ (test_status.checked / test_status.total * 100)|int }}{% else %}0{% endif %}%"></div>
+        </div>
+        <div class="flex items-center gap-6 mt-3 text-sm">
+            <span class="text-emerald-400">✓ <span id="test-passed">{{ test_status.passed }}</span> passed</span>
+            <span class="text-rose-400">✗ <span id="test-failed">{{ test_status.failed }}</span> failed</span>
+        </div>
+    </div>
+</div>
+
+<!-- Webhook Info -->
+<div class="glass rounded-2xl p-6">
+    <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold text-white">Webhook Distribution</h2>
+        {% if settings.webhook_max_proxies > 0 %}
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/20">
+            Top {{ settings.webhook_max_proxies }} proxies
+        </span>
+        {% else %}
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-500/15 text-slate-400 border border-slate-500/20">
+            Unlimited
+        </span>
+        {% endif %}
+    </div>
+    <p class="text-sm text-slate-400 mb-4">Share this URL with your clients to distribute working VLESS configs. No authentication required.</p>
+    <div class="flex items-center gap-3">
+        <code id="webhook-url" class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/20 text-indigo-400 text-sm font-mono truncate">
+            {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}
+        </code>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('webhook-url').textContent.trim())"
+            class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/20 text-slate-300 hover:text-white hover:border-indigo-500/30 transition-all text-sm">
+            Copy
+        </button>
+    </div>
+</div>
+
+<!-- AJAX polling for test progress + scheduler status -->
+<script>
+(function() {
+    let polling = null;
+
+    function formatNextRun(isoStr) {
+        if (!isoStr) return '';
+        try {
+            const d = new Date(isoStr);
+            const now = new Date();
+            const diffMs = d - now;
+            if (diffMs <= 0) return 'Starting soon…';
+            const mins = Math.ceil(diffMs / 60000);
+            if (mins < 60) return 'Next run in ' + mins + ' min';
+            const hrs = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            return 'Next run in ' + hrs + 'h ' + remMins + 'm';
+        } catch(e) { return ''; }
+    }
+
+    function updateStatus() {
+        fetch('/api/test-status')
+            .then(r => r.json())
+            .then(data => {
+                const section = document.getElementById('progress-section');
+                const phase = document.getElementById('test-phase');
+                const checked = document.getElementById('test-checked');
+                const total = document.getElementById('test-total');
+                const passed = document.getElementById('test-passed');
+                const failed = document.getElementById('test-failed');
+                const bar = document.getElementById('progress-bar');
+                const btn = document.getElementById('btn-run-test');
+
+                if (data.running) {
+                    section.classList.remove('hidden');
+                    btn.disabled = true;
+                    btn.classList.add('opacity-50', 'cursor-not-allowed');
+                } else {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+
+                phase.textContent = data.current_phase;
+                checked.textContent = data.checked;
+                total.textContent = data.total;
+                passed.textContent = data.passed;
+                failed.textContent = data.failed;
+
+                const pct = data.total > 0 ? Math.round(data.checked / data.total * 100) : 0;
+                bar.style.width = pct + '%';
+
+                // Update scheduler info
+                if (data.scheduler) {
+                    const sNext = document.getElementById('scheduler-next');
+                    const sBadge = document.getElementById('scheduler-badge');
+                    if (data.scheduler.enabled) {
+                        sBadge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/20';
+                        sBadge.textContent = 'Every ' + data.scheduler.interval_minutes + ' min';
+                        sNext.innerHTML = formatNextRun(data.scheduler.next_run_at);
+                    } else {
+                        sBadge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-400 border border-slate-500/20';
+                        sBadge.textContent = 'Disabled';
+                        sNext.innerHTML = 'Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-run tests.';
+                    }
+                }
+
+                if (!data.running && polling) {
+                    // Keep polling for scheduler updates even when test is idle
+                }
+            })
+            .catch(() => {});
+    }
+
+    // Always poll to keep scheduler status up-to-date
+    polling = setInterval(updateStatus, 5000);
+
+    // Poll faster when test is running
+    {% if test_status.running %}
+    if (polling) clearInterval(polling);
+    polling = setInterval(updateStatus, 1500);
+    {% endif %}
+
+    // Speed up polling after form submit
+    const form = document.querySelector('form[action="/run-test"]');
+    if (form) {
+        form.addEventListener('submit', () => {
+            setTimeout(() => {
+                if (polling) clearInterval(polling);
+                polling = setInterval(updateStatus, 1500);
+            }, 500);
+        });
+    }
+})();
+</script>
+{% endblock %}

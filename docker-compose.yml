@@ -1,0 +1,17 @@
+services:
+  vpn-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vpn-checker
+    ports:
+      - "8000:8000"
+    volumes:
+      - vpn_data:/app/data
+    restart: unless-stopped
+    environment:
+      - XRAY_PATH=/usr/local/bin/xray
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  vpn_data:

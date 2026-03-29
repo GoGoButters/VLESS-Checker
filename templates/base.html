@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}VPN Checker{% endblock %}</title>
+    <meta name="description" content="VLESS Proxy Aggregator & Checker">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        dark: { 50: '#f8fafc', 100: '#e2e8f0', 200: '#cbd5e1', 300: '#94a3b8', 400: '#64748b', 500: '#475569', 600: '#334155', 700: '#1e293b', 800: '#0f172a', 900: '#020617' },
+                        accent: { 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5' },
+                        emerald: { 400: '#34d399', 500: '#10b981' },
+                        rose: { 400: '#fb7185', 500: '#f43f5e' },
+                        amber: { 400: '#fbbf24', 500: '#f59e0b' },
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .glass {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(100, 116, 139, 0.15);
+        }
+        .glass-light {
+            background: rgba(30, 41, 59, 0.5);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(100, 116, 139, 0.1);
+        }
+        .glow-accent { box-shadow: 0 0 30px rgba(99, 102, 241, 0.15); }
+        .glow-emerald { box-shadow: 0 0 30px rgba(16, 185, 129, 0.15); }
+        .gradient-bg {
+            background: linear-gradient(135deg, #020617 0%, #0f172a 30%, #1e1b4b 60%, #0f172a 100%);
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #818cf8, #6366f1);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #f43f5e, #e11d48);
+            transition: all 0.3s ease;
+        }
+        .btn-danger:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 25px rgba(244, 63, 94, 0.3);
+        }
+        .stat-card {
+            transition: all 0.3s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-4px);
+        }
+        .nav-link {
+            position: relative;
+            transition: color 0.2s;
+        }
+        .nav-link::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #6366f1, #818cf8);
+            border-radius: 1px;
+            transition: width 0.3s ease;
+        }
+        .nav-link:hover::after, .nav-link.active::after {
+            width: 100%;
+        }
+        .pulse-dot {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .fade-in {
+            animation: fadeIn 0.4s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        input, select {
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        input:focus, select:focus {
+            border-color: #6366f1 !important;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+        .table-row {
+            transition: background 0.15s;
+        }
+        .table-row:hover {
+            background: rgba(99, 102, 241, 0.05);
+        }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-slate-200">
+    <!-- Navbar -->
+    {% if user is defined and user %}
+    <nav class="glass sticky top-0 z-50 border-b border-slate-700/30">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                        </svg>
+                    </div>
+                    <span class="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">VPN Checker</span>
+                </div>
+                <div class="flex items-center gap-8">
+                    <a href="/" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/' %}active text-white{% endif %}">Dashboard</a>
+                    <a href="/subscriptions" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/subscriptions' %}active text-white{% endif %}">Subscriptions</a>
+                    <a href="/proxies" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/proxies' %}active text-white{% endif %}">Proxies</a>
+                    <a href="/test-urls" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/test-urls' %}active text-white{% endif %}">Test URLs</a>
+                    <a href="/settings" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/settings' %}active text-white{% endif %}">Settings</a>
+                    <div class="h-5 w-px bg-slate-600"></div>
+                    <a href="/logout" class="text-sm text-slate-400 hover:text-rose-400 transition-colors">Logout</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+
+    <!-- Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 fade-in">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
