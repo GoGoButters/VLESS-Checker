@@ -246,7 +246,6 @@ async def run_full_test(proxy_links: list[str]) -> list[tuple[str, int, int, int
     with Session(engine) as session:
         from sqlmodel import delete
         session.exec(delete(ProxyResult))
-        session.commit()
 
         now = datetime.now(timezone.utc).isoformat()
         for p_url, ping_ms, passed, total in valid:

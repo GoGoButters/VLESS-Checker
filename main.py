@@ -64,8 +64,21 @@ async def on_startup():
                 http_timeout_s=10,
             )
             session.add(settings)
+            
+            # Default strict URL tests for Russia (DPI bypass)
+            default_urls = [
+                ("https://www.instagram.com/favicon.ico", 200, 100),
+                ("https://x.com/favicon.ico", 200, 100),
+                ("https://www.youtube.com/generate_204", 204, 0),
+                ("https://chatgpt.com/favicon.ico", 200, 100),
+                ("https://rutracker.org/favicon.ico", 200, 100),
+            ]
+            for i, (url, status, min_b) in enumerate(default_urls, start=1):
+                tu = TestUrl(url=url, expect_status=status, min_body_bytes=min_b, position=i)
+                session.add(tu)
+                
             session.commit()
-            logger.info("Created default settings (admin/admin)")
+            logger.info("Created default settings and strict test URLs")
     # Start the scheduler background loop
     start_scheduler()
 
