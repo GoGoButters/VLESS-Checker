@@ -358,6 +358,22 @@ async def run_full_test(vless_links: list[str]) -> list[tuple[str, int, int, int
         logger.warning("No test URLs configured — skipping test")
         return []
 
+    # Deduplicate proxies by host:port
+    unique_links = []
+    seen_endpoints = set()
+    for link in vless_links:
+        parsed = _parse_vless_url(link)
+        if not parsed:
+            continue
+        endpoint = f"{parsed['host']}:{parsed['port']}"
+        if endpoint not in seen_endpoints:
+            seen_endpoints.add(endpoint)
+            unique_links.append(link)
+
+    original_count = len(vless_links)
+    vless_links = unique_links
+    logger.info(f"Deduplication: {len(vless_links)} unique proxies remaining (from {original_count})")
+
     test_status["running"] = True
     test_status["total"] = len(vless_links)
     test_status["checked"] = 0
