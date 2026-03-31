@@ -77,6 +77,3 @@ docker compose up -d
 - SQLModel / SQLite (Асинхронные запросы не используются из-за ограничения sqlite, поток изолирован)
 - Jinja2, Tailwind CSS (Dark Mode/Glassmorphism)
 - [sing-box](https://github.com/SagerNet/sing-box)
-
----
-*Developed by DeepMind's Antigravity framework code-assistance.*
