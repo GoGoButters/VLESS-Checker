@@ -3,21 +3,20 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import text, event
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
-
-from sqlalchemy import event
 
 engine = create_engine(
     DATABASE_URL,
     echo=False,
     connect_args={
         "check_same_thread": False,
-        "timeout": 15.0,  # Wait up to 15 seconds for locks to clear safely
+        "timeout": 15.0,
     },
 )
+
 
 # Enable WAL mode for concurrent reads/writes (Zero-downtime webhook fix)
 @event.listens_for(engine, "connect")
@@ -42,6 +41,9 @@ class ProxyResult(SQLModel, table=True):
     ping_ms: int = Field(default=0)
     tests_passed: int = Field(default=0)
     tests_total: int = Field(default=0)
+    download_speed_kbps: int = Field(default=0)
+    upload_speed_kbps: int = Field(default=0)
+    speed_score: float = Field(default=0.0)
     last_tested: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -52,7 +54,7 @@ class TestUrl(SQLModel, table=True):
     url: str = Field(unique=True, index=True)
     expect_status: int = Field(default=200)
     min_body_bytes: int = Field(default=100)
-    position: int = Field(default=0)  # ordering
+    position: int = Field(default=0)
 
 
 class Settings(SQLModel, table=True):
@@ -62,9 +64,41 @@ class Settings(SQLModel, table=True):
     ping_threshold_ms: int = Field(default=1000)
     webhook_secret_path: str = Field(default="secret-distrib")
     concurrent_checks_limit: int = Field(default=50)
-    schedule_interval_minutes: int = Field(default=0)  # 0 = disabled
-    webhook_max_proxies: int = Field(default=0)  # 0 = unlimited
-    http_timeout_s: int = Field(default=10)  # timeout for HTTP checks
+    schedule_interval_minutes: int = Field(default=0)
+    webhook_max_proxies: int = Field(default=0)
+    http_timeout_s: int = Field(default=10)
+    speed_test_top_n: int = Field(default=0)  # 0 = disabled
+    node_api_token: str = Field(default="")
+    node_check_top_n: int = Field(default=50)
+
+
+class Node(SQLModel, table=True):
+    """Remote checker node registration."""
+    __tablename__ = "nodes"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(default="")
+    region: str = Field(default="")
+    ip: str = Field(default="")
+    last_heartbeat: str = Field(default="")
+    is_online: bool = Field(default=False)
+    proxies_checked: int = Field(default=0)
+    proxies_passed: int = Field(default=0)
+    registered_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class NodeProxyResult(SQLModel, table=True):
+    """Proxy results from a specific node."""
+    __tablename__ = "node_proxy_results"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    node_id: int = Field(index=True)
+    raw_url: str = Field(index=True)
+    ping_ms: int = Field(default=0)
+    tests_passed: int = Field(default=0)
+    tests_total: int = Field(default=0)
+    download_speed_kbps: int = Field(default=0)
+    upload_speed_kbps: int = Field(default=0)
+    speed_score: float = Field(default=0.0)
+    last_tested: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 def create_db_and_tables():
@@ -90,22 +124,36 @@ def _migrate_db():
             ("schedule_interval_minutes", "INTEGER DEFAULT 0"),
             ("webhook_max_proxies", "INTEGER DEFAULT 0"),
             ("http_timeout_s", "INTEGER DEFAULT 10"),
+            ("speed_test_top_n", "INTEGER DEFAULT 0"),
+            ("node_api_token", "TEXT DEFAULT ''"),
+            ("node_check_top_n", "INTEGER DEFAULT 50"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
 
+        # ProxyResult migrations
+        cursor = conn.execute("PRAGMA table_info(proxy_results)")
+        existing_pr = {row[1] for row in cursor.fetchall()}
+        pr_migrations = [
+            ("download_speed_kbps", "INTEGER DEFAULT 0"),
+            ("upload_speed_kbps", "INTEGER DEFAULT 0"),
+            ("speed_score", "REAL DEFAULT 0.0"),
+        ]
+        for col_name, col_def in pr_migrations:
+            if col_name not in existing_pr:
+                conn.execute(f"ALTER TABLE proxy_results ADD COLUMN {col_name} {col_def}")
+
         conn.commit()
         conn.close()
-        
+
         with engine.begin() as conn:
             try:
-                # Drop old vless table if exists (starting fresh for multi-protocol)
                 conn.execute(text("DROP TABLE IF EXISTS valid_proxies"))
             except Exception:
                 pass
     except Exception:
-        pass  # table doesn't exist yet — create_all will handle it
+        pass
 
 
 def _seed_default_test_urls():

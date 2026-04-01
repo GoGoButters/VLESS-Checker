@@ -11,7 +11,7 @@ import httpx
 from sqlmodel import Session, select
 
 from database import ProxyResult, Settings, TestUrl, engine
-from proxy_parsers import parse_proxy_url, extract_host_port
+from proxy_parsers import parse_proxy_url
 
 logger = logging.getLogger("vpn_checker.tester")
 
@@ -248,8 +248,7 @@ async def run_full_test(proxy_links: list[str]) -> list[tuple[str, int, int, int
             session.add(proxy)
         session.commit()
 
-    test_status["current_phase"] = "done"
-    test_status["running"] = False
+    test_status["current_phase"] = "tested"
     logger.info(f"Test complete: {len(valid)} passed out of {len(proxy_links)}")
 
     return valid

@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
+import secrets
 
-from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi import FastAPI, Request, Form, HTTPException, Header
 from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select, func, delete
 
 from database import (
     create_db_and_tables,
@@ -15,6 +16,8 @@ from database import (
     ProxyResult,
     Settings,
     TestUrl,
+    Node,
+    NodeProxyResult,
 )
 from auth import (
     hash_password,
@@ -25,8 +28,10 @@ from auth import (
 )
 from subs_manager import fetch_and_parse_subscriptions
 from tester import run_full_test, test_status
+from speed_tester import run_speed_test
 from proxy_parsers import replace_proxy_remark
 from scheduler import start_scheduler, scheduler_status
+from log_buffer import log_buffer, setup_log_buffer
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -40,8 +45,68 @@ logger = logging.getLogger("vpn_checker")
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="VPN Checker", version="1.0.0")
+app = FastAPI(title="VPN Checker", version="2.0.0")
 templates = Jinja2Templates(directory="templates")
+
+# ---------------------------------------------------------------------------
+# All default subscription URLs — GitVerse + conversation history
+# ---------------------------------------------------------------------------
+DEFAULT_SUBSCRIPTIONS = [
+    # === GitVerse RUVIPIEN/russian-white-bolt (v2ray format, auto-updated every 3h) ===
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_3_b4689a.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_1_f7c635.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_26_9d0474.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Sevcator_VLESS_ffd7b3.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_VLESS_Clean_fa7d47.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_Trojan_Clean_f30cdf.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_VMess_Clean_94367a.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_SS_Clean_2a8980.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/OpenRay_All_Proxies_39ce9f.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Bypass_Config_7_d33b54.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Vify_VLESS_7f9765.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Yitong_V2Ray_11218f.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/BLACK_VLESS_RUS_11add6.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/BLACK_SS_All_316a8b.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/VLESS_Reality_White_3eac2d.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/V2RayRoot_VLESS_feed6f.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_e52883.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_WL_35806c.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_ST_7ad618.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_WL_ST_587e43.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Xray_Mix_URI_c4598b.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/SilentGhost_Blacklist_676750.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Roosterkid_V2Ray_2e2cfa.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Pawdroid_Free_Servers_6d71e8.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/MahsaNet_Xray_Final_1f5ce9.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_Sub_All_946555.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_VLESS_9c1e9a.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_VLESS_Warp_d9ad39.txt",
+    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_EdikRU_ae94d8.txt",
+    # === Russian community (GitHub) ===
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
+    "https://raw.githubusercontent.com/ByeWhiteLists/ByeWhiteLists2/refs/heads/main/ByeWhiteLists2.txt",
+    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Whitelist.txt",
+    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Whitelist%20%E2%84%962.txt",
+    "https://raw.githubusercontent.com/WhitePrime/xraycheck/refs/heads/main/configs/available",
+    "https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt",
+    # === Iranian aggregators (VLESS Reality focused) ===
+    "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/main/vless_configs.txt",
+    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/Splitted-By-Protocol/vless.txt",
+    "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Splitted-By-Protocol/vless.txt",
+    "https://raw.githubusercontent.com/shabane/kamaji/master/hub/vless",
+    "https://raw.githubusercontent.com/Bardiafa/Free-V2ray-Config/main/Splitted-By-Protocol/vless.txt",
+    # === Mixed protocol aggregators (GitHub) ===
+    "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity",
+    "https://raw.githubusercontent.com/w1770946466/Auto_proxy/main/Long_term_subscription_num",
+    "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray",
+    "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
+    "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
+    "https://raw.githubusercontent.com/LalatinaHub/Mineral/master/result/nodes",
+    "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
+    "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
+    # === CDN subscription ===
+    "https://etoneya.a9fm.site/1",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +114,7 @@ templates = Jinja2Templates(directory="templates")
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
+    setup_log_buffer()
     create_db_and_tables()
     # Seed default settings if empty
     with Session(engine) as session:
@@ -62,9 +128,12 @@ async def on_startup():
                 schedule_interval_minutes=0,
                 webhook_max_proxies=0,
                 http_timeout_s=10,
+                speed_test_top_n=0,
+                node_api_token=secrets.token_hex(16),
+                node_check_top_n=50,
             )
             session.add(settings)
-            
+
             # Default strict URL tests for Russia (DPI bypass)
             default_urls = [
                 ("https://www.instagram.com/favicon.ico", 200, 100),
@@ -77,19 +146,13 @@ async def on_startup():
                 tu = TestUrl(url=url, expect_status=status, min_body_bytes=min_b, position=i)
                 session.add(tu)
 
-            # Default subscriptions (Mix, VLESS, Hysteria2)
-            default_subs = [
-                "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub1.txt",
-                "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/normal/mix",
-                "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/vless",
-                "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/hysteria2",
-            ]
-            for sub_url in default_subs:
+            # Default subscriptions
+            for sub_url in DEFAULT_SUBSCRIPTIONS:
                 session.add(Subscription(url=sub_url))
-                
+
             session.commit()
             logger.info("Created default settings, test URLs, and subscriptions")
-    # Start the scheduler background loop
+
     start_scheduler()
 
 
@@ -146,6 +209,7 @@ async def dashboard(request: Request):
         sub_count = session.exec(select(func.count(Subscription.id))).one()
         proxy_count = session.exec(select(func.count(ProxyResult.id))).one()
         test_url_count = session.exec(select(func.count(TestUrl.id))).one()
+        node_count = session.exec(select(func.count(Node.id))).one()
         settings = session.exec(select(Settings)).first()
 
     return templates.TemplateResponse(request, "dashboard.html", {
@@ -153,6 +217,7 @@ async def dashboard(request: Request):
         "sub_count": sub_count,
         "proxy_count": proxy_count,
         "test_url_count": test_url_count,
+        "node_count": node_count,
         "settings": settings,
         "test_status": test_status,
     })
@@ -204,7 +269,7 @@ async def delete_subscription(request: Request, sub_id: int):
 
 
 # ---------------------------------------------------------------------------
-# TEST URLS — manage the URLs used to validate proxies
+# TEST URLS
 # ---------------------------------------------------------------------------
 @app.get("/test-urls", response_class=HTMLResponse)
 async def test_urls_page(request: Request):
@@ -234,7 +299,6 @@ async def add_test_url(
         with Session(engine) as session:
             existing = session.exec(select(TestUrl).where(TestUrl.url == url)).first()
             if not existing:
-                # Assign next position
                 max_pos = session.exec(select(func.max(TestUrl.position))).one()
                 pos = (max_pos or 0) + 1
                 tu = TestUrl(
@@ -287,6 +351,8 @@ async def settings_save(
     schedule_interval_minutes: int = Form(0),
     webhook_max_proxies: int = Form(0),
     http_timeout_s: int = Form(10),
+    speed_test_top_n: int = Form(0),
+    node_check_top_n: int = Form(50),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -301,6 +367,8 @@ async def settings_save(
             settings.schedule_interval_minutes = max(0, schedule_interval_minutes)
             settings.webhook_max_proxies = max(0, webhook_max_proxies)
             settings.http_timeout_s = max(1, http_timeout_s)
+            settings.speed_test_top_n = max(0, speed_test_top_n)
+            settings.node_check_top_n = max(1, node_check_top_n)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
@@ -313,6 +381,20 @@ async def settings_save(
     })
 
 
+@app.post("/settings/regenerate-node-token")
+async def regenerate_node_token(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        if settings:
+            settings.node_api_token = secrets.token_hex(16)
+            session.add(settings)
+            session.commit()
+    return RedirectResponse("/settings", status_code=302)
+
+
 # ---------------------------------------------------------------------------
 # VALID PROXIES page
 # ---------------------------------------------------------------------------
@@ -323,12 +405,226 @@ async def proxies_page(request: Request):
         return RedirectResponse("/login", status_code=302)
     with Session(engine) as session:
         proxies = session.exec(
-            select(ProxyResult).order_by(ProxyResult.tests_passed.desc(), ProxyResult.ping_ms)
+            select(ProxyResult).order_by(
+                ProxyResult.speed_score.desc(),
+                ProxyResult.tests_passed.desc(),
+                ProxyResult.ping_ms,
+            )
         ).all()
     return templates.TemplateResponse(request, "proxies.html", {
         "user": user,
         "proxies": proxies,
     })
+
+
+# ---------------------------------------------------------------------------
+# LOGS page
+# ---------------------------------------------------------------------------
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    return templates.TemplateResponse(request, "logs.html", {"user": user})
+
+
+@app.get("/api/logs")
+async def api_logs(after_id: int = 0):
+    entries = log_buffer.get_since(after_id)
+    return {"entries": entries}
+
+
+# ---------------------------------------------------------------------------
+# NODES management page
+# ---------------------------------------------------------------------------
+@app.get("/nodes", response_class=HTMLResponse)
+async def nodes_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        nodes = session.exec(select(Node).order_by(Node.id)).all()
+        settings = session.exec(select(Settings)).first()
+    return templates.TemplateResponse(request, "nodes.html", {
+        "user": user,
+        "nodes": nodes,
+        "settings": settings,
+    })
+
+
+@app.post("/nodes/delete/{node_id}")
+async def delete_node(request: Request, node_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if node:
+            session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
+            session.delete(node)
+            session.commit()
+    return RedirectResponse("/nodes", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# NODE API — Bearer Token Auth
+# ---------------------------------------------------------------------------
+def _verify_node_token(authorization: str | None) -> bool:
+    if not authorization or not authorization.startswith("Bearer "):
+        return False
+    token = authorization[7:]
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        return settings and settings.node_api_token and token == settings.node_api_token
+
+
+@app.post("/api/node/register")
+async def node_register(request: Request, authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    body = await request.json()
+    name = body.get("name", "unnamed")
+    region = body.get("region", "unknown")
+
+    client_ip = request.client.host if request.client else ""
+
+    with Session(engine) as session:
+        # Check if node with same name exists
+        existing = session.exec(select(Node).where(Node.name == name)).first()
+        if existing:
+            existing.ip = client_ip
+            existing.region = region
+            existing.is_online = True
+            from datetime import datetime, timezone
+            existing.last_heartbeat = datetime.now(timezone.utc).isoformat()
+            session.add(existing)
+            session.commit()
+            return {"status": "updated", "node_id": existing.id}
+        else:
+            from datetime import datetime, timezone
+            node = Node(
+                name=name,
+                region=region,
+                ip=client_ip,
+                is_online=True,
+                last_heartbeat=datetime.now(timezone.utc).isoformat(),
+            )
+            session.add(node)
+            session.commit()
+            session.refresh(node)
+            return {"status": "registered", "node_id": node.id}
+
+
+@app.get("/api/node/config")
+async def node_get_config(authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        test_urls = session.exec(select(TestUrl).order_by(TestUrl.position)).all()
+
+    return {
+        "ping_threshold_ms": settings.ping_threshold_ms if settings else 1000,
+        "http_timeout_s": settings.http_timeout_s if settings else 10,
+        "concurrent_checks_limit": settings.concurrent_checks_limit if settings else 50,
+        "speed_test_top_n": settings.speed_test_top_n if settings else 0,
+        "test_urls": [
+            {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
+            for t in test_urls
+        ],
+    }
+
+
+@app.get("/api/node/proxies")
+async def node_get_proxies(top: int = 50, authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        limit = min(top, settings.node_check_top_n if settings else 50)
+        proxies = session.exec(
+            select(ProxyResult)
+            .order_by(ProxyResult.speed_score.desc(), ProxyResult.tests_passed.desc(), ProxyResult.ping_ms)
+            .limit(limit)
+        ).all()
+
+    return {"proxies": [p.raw_url for p in proxies]}
+
+
+@app.post("/api/node/results")
+async def node_post_results(request: Request, authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    body = await request.json()
+    node_id = body.get("node_id")
+    results = body.get("results", [])
+
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        # Clear old results for this node
+        session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
+
+        passed = 0
+        for r in results:
+            npr = NodeProxyResult(
+                node_id=node_id,
+                raw_url=r.get("raw_url", ""),
+                ping_ms=r.get("ping_ms", 0),
+                tests_passed=r.get("tests_passed", 0),
+                tests_total=r.get("tests_total", 0),
+                download_speed_kbps=r.get("download_speed_kbps", 0),
+                upload_speed_kbps=r.get("upload_speed_kbps", 0),
+                speed_score=r.get("speed_score", 0.0),
+                last_tested=now,
+            )
+            session.add(npr)
+            if r.get("tests_passed", 0) > 0:
+                passed += 1
+
+        node.proxies_checked = len(results)
+        node.proxies_passed = passed
+        node.last_heartbeat = now
+        node.is_online = True
+        session.add(node)
+        session.commit()
+
+    logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")
+    return {"status": "ok", "accepted": len(results)}
+
+
+@app.post("/api/node/heartbeat")
+async def node_heartbeat(request: Request, authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    body = await request.json()
+    node_id = body.get("node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+
+    from datetime import datetime, timezone
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if node:
+            node.last_heartbeat = datetime.now(timezone.utc).isoformat()
+            node.is_online = True
+            session.add(node)
+            session.commit()
+
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +639,6 @@ async def run_test(request: Request):
     if test_status["running"]:
         return RedirectResponse("/", status_code=302)
 
-    # Launch test in background
     asyncio.create_task(_background_test())
     return RedirectResponse("/", status_code=302)
 
@@ -353,13 +648,17 @@ async def _background_test():
     try:
         test_status["current_phase"] = "fetching"
         test_status["running"] = True
-        vless_links = await fetch_and_parse_subscriptions()
-        if vless_links:
-            await run_full_test(vless_links)
+        proxy_links = await fetch_and_parse_subscriptions()
+        if proxy_links:
+            await run_full_test(proxy_links)
+            # Run speed test if configured
+            await run_speed_test(test_status)
+            test_status["current_phase"] = "done"
+            test_status["running"] = False
         else:
             test_status["current_phase"] = "done"
             test_status["running"] = False
-            logger.warning("No VLESS links found from subscriptions")
+            logger.warning("No proxy links found from subscriptions")
     except Exception as e:
         logger.error(f"Test pipeline error: {e}", exc_info=True)
         test_status["running"] = False
@@ -378,17 +677,48 @@ async def api_test_status():
 
 
 # ---------------------------------------------------------------------------
-# WEBHOOK — Public proxy distribution
-# Proxies sorted by tests_passed DESC, ping_ms ASC
-# Configs renamed to sequential numbers: 1, 2, 3, ...
+# WEBHOOK — Public proxy distribution (master)
 # ---------------------------------------------------------------------------
 @app.get("/{secret_path:path}")
 async def webhook_output(secret_path: str):
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
-        if not settings or secret_path != settings.webhook_secret_path:
+        if not settings:
             raise HTTPException(status_code=404)
+
+        # Node-specific webhook: {webhook_secret_path}/node/{node_id}
+        node_prefix = f"{settings.webhook_secret_path}/node/"
+        if secret_path.startswith(node_prefix):
+            try:
+                node_id = int(secret_path[len(node_prefix):])
+            except ValueError:
+                raise HTTPException(status_code=404)
+
+            node = session.get(Node, node_id)
+            if not node:
+                raise HTTPException(status_code=404)
+
+            proxies = session.exec(
+                select(NodeProxyResult)
+                .where(NodeProxyResult.node_id == node_id)
+                .order_by(NodeProxyResult.speed_score.desc(), NodeProxyResult.tests_passed.desc(), NodeProxyResult.ping_ms)
+            ).all()
+
+            if settings.webhook_max_proxies > 0:
+                proxies = proxies[:settings.webhook_max_proxies]
+
+            lines = []
+            for i, p in enumerate(proxies, start=1):
+                renamed = replace_proxy_remark(p.raw_url, str(i))
+                lines.append(renamed)
+            return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
+
+        # Main webhook
+        if secret_path != settings.webhook_secret_path:
+            raise HTTPException(status_code=404)
+
         query = select(ProxyResult).order_by(
+            ProxyResult.speed_score.desc(),
             ProxyResult.tests_passed.desc(),
             ProxyResult.ping_ms,
         )
@@ -396,7 +726,6 @@ async def webhook_output(secret_path: str):
             query = query.limit(settings.webhook_max_proxies)
         proxies = session.exec(query).all()
 
-    # Rename configs: replace remark with sequential numbers
     lines = []
     for i, p in enumerate(proxies, start=1):
         renamed = replace_proxy_remark(p.raw_url, str(i))

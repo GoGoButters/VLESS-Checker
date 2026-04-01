@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  vpn-checker-node:
+    build:
+      context: ..
+      dockerfile: node/Dockerfile
+    image: vpn_checker_node:latest
+    container_name: checker-node
+    restart: unless-stopped
+    environment:
+      - MASTER_URL=http://host.docker.internal:8000
+      - NODE_TOKEN=your_token_from_settings
+      - NODE_NAME=us-east-worker-1
+      - NODE_REGION=USA
+    # Remove network mode if master running remotely
+    network_mode: host 

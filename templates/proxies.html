@@ -21,7 +21,10 @@
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Proxy Config</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Tests</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Ping</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-40">Tested</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">DL Speed</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">UL Speed</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">Score</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32">Tested</th>
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-700/20">
@@ -55,6 +58,23 @@
                     {% else %}
                     <span class="px-3 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-xs font-semibold">{{ proxy.ping_ms }}ms</span>
                     {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    {% if proxy.download_speed_kbps > 0 %}
+                    <span class="text-sm font-semibold text-emerald-400">{{ proxy.download_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                    {% else %}
+                    <span class="text-sm text-slate-500">—</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    {% if proxy.upload_speed_kbps > 0 %}
+                    <span class="text-sm font-semibold text-indigo-400">{{ proxy.upload_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                    {% else %}
+                    <span class="text-sm text-slate-500">—</span>
+                    {% endif %}
+                </td>
+                <td class="px-6 py-4">
+                    <span class="px-3 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-xs font-bold">{{ proxy.speed_score | int }}</span>
                 </td>
                 <td class="px-6 py-4 text-sm text-slate-400">{{ proxy.last_tested[:16] }}</td>
             </tr>
