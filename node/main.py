@@ -16,6 +16,7 @@ class NodeApp:
     def __init__(self):
         self.master_url = config.master_url.rstrip("/")
         self.node_id = None
+        self.last_run_id = None  # Track the master's proxy list version
         self.http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
@@ -52,14 +53,18 @@ class NodeApp:
             return None
 
     async def get_proxies(self):
+        """Fetch proxies and run_id from master. Returns (run_id, proxy_list)."""
         try:
             resp = await self.http_client.get(f"{self.master_url}/api/node/proxies")
             if resp.status_code == 200:
-                return resp.json().get("proxies", [])
-            return []
+                data = resp.json()
+                run_id = data.get("run_id", "unknown")
+                proxies = data.get("proxies", [])
+                return run_id, proxies
+            return None, []
         except Exception as e:
             logger.error(f"Error fetching proxies: {e}")
-            return []
+            return None, []
 
     async def report_results(self, results):
         if not self.node_id:
@@ -108,13 +113,17 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
 
-        # 2. Get Proxies
-        raw_urls = await self.get_proxies()
+        # 2. Get Proxies and check if list changed
+        run_id, raw_urls = await self.get_proxies()
         if not raw_urls:
             logger.info("No proxies provided by master. Idling.")
             return
-            
-        logger.info(f"Got {len(raw_urls)} proxies to test from master.")
+
+        if run_id == self.last_run_id:
+            logger.info(f"Master list unchanged (run_id={run_id}). Skipping test cycle.")
+            return
+
+        logger.info(f"New proxy list detected! run_id={run_id} (prev={self.last_run_id}). Starting tests with {len(raw_urls)} proxies...")
 
         # 3. Test Proxies (We use singbox_runner directly to keep dependencies light, or tester module)
         # Because we're a node, we should run the test similar to _background_test:
@@ -192,8 +201,11 @@ class NodeApp:
                     "speed_score": o.speed_score
                 })
         
-        # 4. Report
-        await self.report_results(final_results)
+        # 4. Report results and save run_id
+        reported = await self.report_results(final_results)
+        if reported:
+            self.last_run_id = run_id
+            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new list.")
 
 
 async def main():

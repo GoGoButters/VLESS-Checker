@@ -553,7 +553,15 @@ async def node_get_proxies(top: int = 50, authorization: str = Header(None)):
             .limit(limit)
         ).all()
 
-    return {"proxies": [p.raw_url for p in proxies]}
+    raw_urls = [p.raw_url for p in proxies]
+    import hashlib
+    # Create simple hash of the URLs to act as a unique identifier for this proxy batch
+    run_id = hashlib.md5("".join(raw_urls).encode("utf-8")).hexdigest() if raw_urls else "empty"
+
+    return {
+        "run_id": run_id,
+        "proxies": raw_urls
+    }
 
 
 @app.post("/api/node/results")
