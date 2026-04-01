@@ -12,6 +12,9 @@ services:
     environment:
       - SINGBOX_PATH=/usr/local/bin/sing-box
       - PYTHONUNBUFFERED=1
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
 volumes:
   vpn_data:
