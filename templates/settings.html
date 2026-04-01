@@ -111,20 +111,13 @@
 
     <div class="glass rounded-2xl p-6 mb-6">
         <h2 class="text-lg font-semibold text-white mb-6">Global Consensus Sub (Multi-Node)</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="grid grid-cols-1 gap-6">
             <div>
-                <label for="global_sub_min_nodes" class="block text-sm font-medium text-slate-300 mb-2">Minimum Passing Nodes</label>
-                <input type="number" name="global_sub_min_nodes" id="global_sub_min_nodes" min="1" max="100"
-                    value="{{ settings.global_sub_min_nodes }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Number of nodes (including master) that must report 'pass' for a proxy to be included in the global sub.</p>
-            </div>
-            <div>
-                <label for="global_sub_top_n" class="block text-sm font-medium text-slate-300 mb-2">Global Sub Top-N</label>
+                <label for="global_sub_top_n" class="block text-sm font-medium text-slate-300 mb-2">Global Sub Top-N Configs</label>
                 <input type="number" name="global_sub_top_n" id="global_sub_top_n" min="0" max="5000"
                     value="{{ settings.global_sub_top_n }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Maximum number of proxies in the global subscription. Set to 0 for unlimited.</p>
+                <p class="text-xs text-slate-500 mt-1">Maximum number of proxies in the global subscription. Set to 0 for unlimited. The list will automatically rank proxies dynamically, placing those that succeeded on the highest number of nodes at the very top.</p>
             </div>
         </div>
     </div>

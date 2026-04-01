@@ -353,7 +353,6 @@ async def settings_save(
     http_timeout_s: int = Form(10),
     speed_test_top_n: int = Form(0),
     node_check_top_n: int = Form(50),
-    global_sub_min_nodes: int = Form(1),
     global_sub_top_n: int = Form(50),
     new_password: str = Form(""),
 ):
@@ -371,7 +370,6 @@ async def settings_save(
             settings.http_timeout_s = max(1, http_timeout_s)
             settings.speed_test_top_n = max(0, speed_test_top_n)
             settings.node_check_top_n = max(1, node_check_top_n)
-            settings.global_sub_min_nodes = max(1, global_sub_min_nodes)
             settings.global_sub_top_n = max(0, global_sub_top_n)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
@@ -743,13 +741,12 @@ async def webhook_output(secret_path: str):
             # Compute consensus
             consensus_list = []
             for link, data in stats.items():
-                if data["passes"] >= settings.global_sub_min_nodes:
-                    avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"])
-                    consensus_list.append({
-                        "link": link,
-                        "passes": data["passes"],
-                        "avg_speed": avg_speed
-                    })
+                avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
+                consensus_list.append({
+                    "link": link,
+                    "passes": data["passes"],
+                    "avg_speed": avg_speed
+                })
             
             # Sort by passes (desc), then speed (desc)
             consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)

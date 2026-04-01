@@ -206,7 +206,7 @@
         </span>
         {% endif %}
     </div>
-    <p class="text-sm text-slate-400 mb-4">Combines local passed proxies with the results from <strong>{{ node_count }}</strong> remote nodes. Requires <strong>{{ settings.global_sub_min_nodes }}</strong> nodes to agree on proxy availability.</p>
+    <p class="text-sm text-slate-400 mb-4">Combines local passed proxies with the results from <strong>{{ node_count }}</strong> remote nodes. The list dynamically ranks proxies so that identical configurations that succeeded on the highest number of nodes appear at the very top.</p>
     <div class="flex items-center gap-3">
         <code id="global-url" class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
             {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
