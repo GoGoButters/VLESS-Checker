@@ -22,17 +22,17 @@
         <p class="text-sm text-slate-300 mb-4">Nodes are headless Docker containers that pull proxy lists from this master panel, check them locally using Sing-Box, and report the results back. This allows you to build regional proxy lists and bypass DPI blocks from different IPs.</p>
         
         <div class="bg-slate-900/50 rounded-xl p-4 font-mono text-xs text-slate-300 overflow-x-auto">
-            <div class="text-indigo-400 mb-1"># 1. Set these environment variables on your remote server:</div>
-            <div>MASTER_URL=https://<span class="text-emerald-400">YOUR_PANEL_DOMAIN</span></div>
-            <div>NODE_TOKEN=<span class="text-emerald-400">{{ settings.node_api_token if settings else 'NOT_SET' }}</span></div>
-            <div>NODE_NAME=us-east-worker-1</div>
-            <div>NODE_REGION=USA</div>
+            <div class="text-indigo-400 mb-1"># 1. Clone the repository on your remote worker server:</div>
+            <div>git clone https://github.com/GoGoButters/VLESS-Checker.git</div>
+            <div>cd VLESS-Checker/node</div>
             <br>
-            <div class="text-indigo-400 mb-1"># 2. Run the node container</div>
-            <div>docker run -d --name checker-node --restart unless-stopped \</div>
-            <div>  -e MASTER_URL=$MASTER_URL -e NODE_TOKEN=$NODE_TOKEN \</div>
-            <div>  -e NODE_NAME=$NODE_NAME -e NODE_REGION=$NODE_REGION \</div>
-            <div>  vpn_checker_node:latest</div>
+            <div class="text-indigo-400 mb-1"># 2. Add your node token and master URL to docker-compose.yml:</div>
+            <div>nano docker-compose.yml</div>
+            <div><span class="text-slate-500"># Set MASTER_URL=https://<span class="text-emerald-400">YOUR_PANEL_DOMAIN</span></span></div>
+            <div><span class="text-slate-500"># Set NODE_TOKEN=<span class="text-emerald-400">{{ settings.node_api_token if settings else 'NOT_SET' }}</span></span></div>
+            <br>
+            <div class="text-indigo-400 mb-1"># 3. Build and run the node container</div>
+            <div>docker compose up --build -d</div>
         </div>
     </div>
 
