@@ -353,6 +353,8 @@ async def settings_save(
     http_timeout_s: int = Form(10),
     speed_test_top_n: int = Form(0),
     node_check_top_n: int = Form(50),
+    global_sub_min_nodes: int = Form(1),
+    global_sub_top_n: int = Form(50),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -369,6 +371,8 @@ async def settings_save(
             settings.http_timeout_s = max(1, http_timeout_s)
             settings.speed_test_top_n = max(0, speed_test_top_n)
             settings.node_check_top_n = max(1, node_check_top_n)
+            settings.global_sub_min_nodes = max(1, global_sub_min_nodes)
+            settings.global_sub_top_n = max(0, global_sub_top_n)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
@@ -710,6 +714,54 @@ async def webhook_output(secret_path: str):
             lines = []
             for i, p in enumerate(proxies, start=1):
                 renamed = replace_proxy_remark(p.raw_url, str(i))
+                lines.append(renamed)
+            return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
+
+        # Global Consensus Webhook: {webhook_secret_path}/global
+        global_prefix = f"{settings.webhook_secret_path}/global"
+        if secret_path == global_prefix:
+            from collections import defaultdict
+            
+            # Dictionary to accumulate stats: link -> {"passes": 0, "speed_scores": []}
+            stats = defaultdict(lambda: {"passes": 0, "speed_scores": []})
+            
+            # Master results
+            master_results = session.exec(select(ProxyResult)).all()
+            for p in master_results:
+                link = p.raw_url
+                stats[link]["passes"] += 1
+                stats[link]["speed_scores"].append(p.speed_score)
+                
+            # Node results (only consider as passed if tests_passed > 0)
+            node_results = session.exec(select(NodeProxyResult)).all()
+            for np in node_results:
+                if np.tests_passed > 0:  # Valid local pass for that node
+                    link = np.raw_url
+                    stats[link]["passes"] += 1
+                    stats[link]["speed_scores"].append(np.speed_score)
+            
+            # Compute consensus
+            consensus_list = []
+            for link, data in stats.items():
+                if data["passes"] >= settings.global_sub_min_nodes:
+                    avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"])
+                    consensus_list.append({
+                        "link": link,
+                        "passes": data["passes"],
+                        "avg_speed": avg_speed
+                    })
+            
+            # Sort by passes (desc), then speed (desc)
+            consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)
+            
+            # Limit
+            top_n = settings.global_sub_top_n
+            if top_n > 0:
+                consensus_list = consensus_list[:top_n]
+                
+            lines = []
+            for i, p in enumerate(consensus_list, start=1):
+                renamed = replace_proxy_remark(p["link"], f"GLOBAL-{i}-P{p['passes']}")
                 lines.append(renamed)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 

@@ -71,6 +71,10 @@ class Settings(SQLModel, table=True):
     node_api_token: str = Field(default="")
     node_check_top_n: int = Field(default=50)
 
+    # Added: Global Consensus settings
+    global_sub_min_nodes: int = Field(default=1)
+    global_sub_top_n: int = Field(default=50)
+
 
 class Node(SQLModel, table=True):
     """Remote checker node registration."""
@@ -127,6 +131,8 @@ def _migrate_db():
             ("speed_test_top_n", "INTEGER DEFAULT 0"),
             ("node_api_token", "TEXT DEFAULT ''"),
             ("node_check_top_n", "INTEGER DEFAULT 50"),
+            ("global_sub_min_nodes", "INTEGER DEFAULT 1"),
+            ("global_sub_top_n", "INTEGER DEFAULT 50"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:

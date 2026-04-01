@@ -189,6 +189,35 @@
     </div>
 </div>
 
+<!-- Global Consensus Webhook -->
+<div class="glass rounded-2xl p-6 mb-8 border border-emerald-500/20 glow-emerald" style="box-shadow: 0 0 20px rgba(16, 185, 129, 0.1);">
+    <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+            <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+            Global Consensus Sub
+        </h2>
+        {% if settings.global_sub_top_n > 0 %}
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+            Top {{ settings.global_sub_top_n }}
+        </span>
+        {% else %}
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+            Unlimited
+        </span>
+        {% endif %}
+    </div>
+    <p class="text-sm text-slate-400 mb-4">Combines local passed proxies with the results from <strong>{{ node_count }}</strong> remote nodes. Requires <strong>{{ settings.global_sub_min_nodes }}</strong> nodes to agree on proxy availability.</p>
+    <div class="flex items-center gap-3">
+        <code id="global-url" class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
+            {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
+        </code>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('global-url').textContent.trim())"
+            class="px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white transition-all text-sm font-medium border border-emerald-400/30">
+            Copy
+        </button>
+    </div>
+</div>
+
 <!-- AJAX polling for test progress + scheduler status -->
 <script>
 (function() {
