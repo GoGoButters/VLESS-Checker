@@ -93,22 +93,15 @@ class NodeApp:
             logger.warning("Could not fetch test config, skipping cycle.")
             return
 
-        urls = []
-        # Convert remote test URLs into local config class
-        # from tester import TestUrl (We redefine or just use a dict for simplicity)
-        from pydantic import BaseModel
-        class MinimalTestUrl(BaseModel):
-            url: str
-            expect_status: int = 200
-            min_body_bytes: int = 100
-
+        # Build test URL dicts (run_proxy_checks expects list[dict])
+        test_urls = []
         for u in test_config.get("test_urls", []):
-            urls.append(MinimalTestUrl(
-                url=u["url"], 
-                expect_status=u["expect_status"], 
-                min_body_bytes=u["min_body_bytes"]
-            ))
-            
+            test_urls.append({
+                "url": u["url"],
+                "expect_status": u["expect_status"],
+                "min_body_bytes": u["min_body_bytes"]
+            })
+
         ping_thresh = test_config.get("ping_threshold_ms", 1500)
         http_timeout = test_config.get("http_timeout_s", 10)
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
@@ -126,39 +119,43 @@ class NodeApp:
 
         logger.info(f"New proxy list detected! run_id={run_id} (prev={self.last_run_id}). Starting tests with {len(raw_urls)} proxies...")
 
-        # 3. Test Proxies (We use singbox_runner directly to keep dependencies light, or tester module)
-        # Because we're a node, we should run the test similar to _background_test:
-        from proxy_parsers import parse_proxy_url
+        # 3. Test Proxies using run_proxy_checks (takes raw URL strings)
         from tester import run_proxy_checks
-        from speed_tester import speed_test_proxies
-        
-        parsed = []
-        for raw in raw_urls:
-            p = parse_proxy_url(raw)
-            if p:
-                parsed.append(p)
-                
-        if not parsed:
-            logger.warning("No valid proxy parsed.")
-            return
 
         status_dict = {
             "running": True,
-            "current_phase": "pinging",
+            "current_phase": "checking",
             "checked": 0,
-            "total": len(parsed),
+            "total": len(raw_urls),
             "passed": 0,
             "failed": 0,
         }
-        
-        # Test basic connectivity + URLs
+
         valid_proxies = await run_proxy_checks(
-            parsed, urls, ping_thresh, http_timeout, concurrent, status_dict,
+            raw_urls, test_urls, ping_thresh, http_timeout, concurrent, status_dict,
             singbox_path=config.singbox_path,
-            port_start=config.singbox_port
         )
-        
-        # Format results
+
+        logger.info(f"Proxy checks done: {status_dict['passed']} passed, {status_dict['failed']} failed out of {status_dict['checked']} checked.")
+
+        # 4. Optional: Speed testing phase
+        if speed_top_n > 0 and valid_proxies:
+            from speed_tester import _measure_speed, _compute_speed_score
+            logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies...")
+
+            to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
+            for p in to_test:
+                result = await _measure_speed(p.raw_url, timeout_s=http_timeout + 5)
+                if result:
+                    dl, ul = result
+                    p.download_speed_kbps = dl
+                    p.upload_speed_kbps = ul
+                    p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
+                    logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f}")
+                else:
+                    p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+
+        # 5. Format results for reporting
         final_results = []
         for p in valid_proxies:
             final_results.append({
@@ -166,47 +163,17 @@ class NodeApp:
                 "ping_ms": p.ping_ms,
                 "tests_passed": p.tests_passed,
                 "tests_total": p.tests_total,
-                "download_speed_kbps": p.download_speed_kbps,
-                "upload_speed_kbps": p.upload_speed_kbps,
-                "speed_score": p.speed_score
+                "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
+                "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
+                "speed_score": getattr(p, "speed_score", 0.0),
             })
-            
-        # Optional Speed testing phase if master requested it
-        if speed_top_n > 0 and final_results:
-            logger.info(f"Running speed tests for top {speed_top_n} proxies...")
-            # We must pass ProxyResult-like objects to speed_test_proxies. 
-            # We will patch the attributes locally.
-            class DummyProxyResult:
-                def __init__(self, **kw):
-                    self.__dict__.update(kw)
-            
-            objs = [DummyProxyResult(**r) for r in final_results]
-            
-            await speed_test_proxies(
-                objs, 
-                top_n=speed_top_n, 
-                singbox_path=config.singbox_path,
-                port_start=config.singbox_port + 1000 # Offset to avoid conflict
-            )
-            
-            # Repack results
-            final_results = []
-            for o in objs:
-                final_results.append({
-                    "raw_url": o.raw_url,
-                    "ping_ms": o.ping_ms,
-                    "tests_passed": o.tests_passed,
-                    "tests_total": o.tests_total,
-                    "download_speed_kbps": o.download_speed_kbps,
-                    "upload_speed_kbps": o.upload_speed_kbps,
-                    "speed_score": o.speed_score
-                })
-        
-        # 4. Report results and save run_id
+
+        # 6. Report results and save run_id
         reported = await self.report_results(final_results, checked_count=status_dict["checked"])
         if reported:
             self.last_run_id = run_id
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new list.")
+
 
 
 async def main():
