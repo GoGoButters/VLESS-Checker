@@ -362,6 +362,10 @@ async def run_full_test(proxy_links: list[str]) -> list[ProxyResult]:
             session.add(p)
         session.commit()
 
+    # Optional: Speed test phase (Master)
+    from speed_tester import run_speed_test
+    await run_speed_test(test_status)
+
     test_status["current_phase"] = "tested"
     test_status["running"] = False
     logger.info(f"Test complete: {len(valid)} passed out of {len(proxy_links)}")
