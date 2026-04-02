@@ -540,13 +540,13 @@ async def node_get_config(authorization: str = Header(None)):
 
 
 @app.get("/api/node/proxies")
-async def node_get_proxies(top: int = 50, authorization: str = Header(None)):
+async def node_get_proxies(authorization: str = Header(None)):
     if not _verify_node_token(authorization):
         raise HTTPException(status_code=401, detail="Invalid token")
 
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
-        limit = min(top, settings.node_check_top_n if settings else 50)
+        limit = settings.node_check_top_n if settings else 50
         proxies = session.exec(
             select(ProxyResult)
             .order_by(ProxyResult.speed_score.desc(), ProxyResult.tests_passed.desc(), ProxyResult.ping_ms)
