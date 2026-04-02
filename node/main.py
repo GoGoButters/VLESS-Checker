@@ -66,17 +66,18 @@ class NodeApp:
             logger.error(f"Error fetching proxies: {e}")
             return None, []
 
-    async def report_results(self, results):
+    async def report_results(self, results, checked_count: int = 0):
         if not self.node_id:
             return False
             
         try:
             resp = await self.http_client.post(f"{self.master_url}/api/node/results", json={
                 "node_id": self.node_id,
-                "results": results
+                "results": results,
+                "checked_count": checked_count
             })
             if resp.status_code == 200:
-                logger.info(f"Successfully reported {len(results)} results to master.")
+                logger.info(f"Successfully reported {len(results)} results (out of {checked_count} checked) to master.")
                 return True
             else:
                 logger.error(f"Failed to report results: HTTP {resp.status_code} - {resp.text}")
@@ -202,7 +203,7 @@ class NodeApp:
                 })
         
         # 4. Report results and save run_id
-        reported = await self.report_results(final_results)
+        reported = await self.report_results(final_results, checked_count=status_dict["checked"])
         if reported:
             self.last_run_id = run_id
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new list.")

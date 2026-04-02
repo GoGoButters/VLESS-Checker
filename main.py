@@ -604,7 +604,7 @@ async def node_post_results(request: Request, authorization: str = Header(None))
             if r.get("tests_passed", 0) > 0:
                 passed += 1
 
-        node.proxies_checked = len(results)
+        node.proxies_checked = body.get("checked_count", len(results))
         node.proxies_passed = passed
         node.last_heartbeat = now
         node.is_online = True
