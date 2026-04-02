@@ -14,73 +14,75 @@
 
 <div class="glass rounded-2xl overflow-hidden">
     {% if proxies %}
-    <table class="w-full">
-        <thead>
-            <tr class="border-b border-slate-700/30">
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12">#</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Proxy Config</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Tests</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-28">Ping</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">DL Speed</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">UL Speed</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24">Score</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32">Tested</th>
-            </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-700/20">
-            {% for proxy in proxies %}
-            <tr class="table-row">
-                <td class="px-6 py-4 text-sm text-slate-500">{{ loop.index }}</td>
-                <td class="px-6 py-4">
-                    <div class="flex items-center gap-3">
-                        <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
-                        <span class="text-sm text-slate-200 truncate max-w-2xl font-mono">{{ proxy.raw_url[:80] }}{% if proxy.raw_url|length > 80 %}…{% endif %}</span>
-                    </div>
-                </td>
-                <td class="px-6 py-4">
-                    {% if proxy.tests_total > 0 %}
-                        {% if proxy.tests_passed == proxy.tests_total %}
-                        <span class="px-3 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-semibold">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
-                        {% elif proxy.tests_passed > proxy.tests_total // 2 %}
-                        <span class="px-3 py-1 rounded-lg bg-amber-500/10 text-amber-400 text-xs font-semibold">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
+    <div class="overflow-x-auto">
+        <table class="w-full border-collapse">
+            <thead>
+                <tr class="border-b border-slate-700/30">
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12">#</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Proxy Config</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Tests</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Ping</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">DL Speed</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">UL Speed</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">Score</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32 whitespace-nowrap">Tested</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-700/20">
+                {% for proxy in proxies %}
+                <tr class="table-row">
+                    <td class="px-4 py-4 text-sm text-slate-500">{{ loop.index }}</td>
+                    <td class="px-4 py-4 min-w-[300px]">
+                        <div class="flex items-center gap-3">
+                            <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
+                            <span class="text-sm text-slate-200 truncate max-w-lg font-mono">{{ proxy.raw_url[:80] }}{% if proxy.raw_url|length > 80 %}…{% endif %}</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-4">
+                        {% if proxy.tests_total > 0 %}
+                            {% if proxy.tests_passed == proxy.tests_total %}
+                            <span class="px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
+                            {% elif proxy.tests_passed > proxy.tests_total // 2 %}
+                            <span class="px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
+                            {% else %}
+                            <span class="px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
+                            {% endif %}
                         {% else %}
-                        <span class="px-3 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-xs font-semibold">{{ proxy.tests_passed }}/{{ proxy.tests_total }}</span>
+                        <span class="text-sm text-slate-500">—</span>
                         {% endif %}
-                    {% else %}
-                    <span class="text-sm text-slate-500">—</span>
-                    {% endif %}
-                </td>
-                <td class="px-6 py-4">
-                    {% if proxy.ping_ms < 200 %}
-                    <span class="px-3 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-semibold">{{ proxy.ping_ms }}ms</span>
-                    {% elif proxy.ping_ms < 500 %}
-                    <span class="px-3 py-1 rounded-lg bg-amber-500/10 text-amber-400 text-xs font-semibold">{{ proxy.ping_ms }}ms</span>
-                    {% else %}
-                    <span class="px-3 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-xs font-semibold">{{ proxy.ping_ms }}ms</span>
-                    {% endif %}
-                </td>
-                <td class="px-6 py-4">
-                    {% if proxy.download_speed_kbps > 0 %}
-                    <span class="text-sm font-semibold text-emerald-400">{{ proxy.download_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
-                    {% else %}
-                    <span class="text-sm text-slate-500">—</span>
-                    {% endif %}
-                </td>
-                <td class="px-6 py-4">
-                    {% if proxy.upload_speed_kbps > 0 %}
-                    <span class="text-sm font-semibold text-indigo-400">{{ proxy.upload_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
-                    {% else %}
-                    <span class="text-sm text-slate-500">—</span>
-                    {% endif %}
-                </td>
-                <td class="px-6 py-4">
-                    <span class="px-3 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-xs font-bold">{{ proxy.speed_score | int }}</span>
-                </td>
-                <td class="px-6 py-4 text-sm text-slate-400">{{ proxy.last_tested[:16] }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                    </td>
+                    <td class="px-4 py-4">
+                        {% if proxy.ping_ms < 200 %}
+                        <span class="px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.ping_ms }}ms</span>
+                        {% elif proxy.ping_ms < 500 %}
+                        <span class="px-2 py-1 rounded-lg bg-amber-500/10 text-amber-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.ping_ms }}ms</span>
+                        {% else %}
+                        <span class="px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400 text-[11px] font-semibold whitespace-nowrap">{{ proxy.ping_ms }}ms</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4">
+                        {% if proxy.download_speed_kbps > 0 %}
+                        <span class="text-sm font-semibold text-emerald-400 whitespace-nowrap">{{ proxy.download_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                        {% else %}
+                        <span class="text-sm text-slate-500">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4">
+                        {% if proxy.upload_speed_kbps > 0 %}
+                        <span class="text-sm font-semibold text-indigo-400 whitespace-nowrap">{{ proxy.upload_speed_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                        {% else %}
+                        <span class="text-sm text-slate-500">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4">
+                        <span class="px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-[11px] font-bold whitespace-nowrap">{{ proxy.speed_score | int }}</span>
+                    </td>
+                    <td class="px-4 py-4 text-sm text-slate-400 whitespace-nowrap">{{ proxy.last_tested[:16].replace('T', ' ') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% else %}
     <div class="px-6 py-16 text-center">
         <div class="w-16 h-16 rounded-2xl bg-slate-800/60 flex items-center justify-center mx-auto mb-4">
