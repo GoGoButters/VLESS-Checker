@@ -7,6 +7,7 @@ import secrets
 from fastapi import FastAPI, Request, Form, HTTPException, Header
 from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, func, delete
 
 from database import (
@@ -46,6 +47,7 @@ logger = logging.getLogger("vpn_checker")
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="VPN Checker", version="2.0.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # ---------------------------------------------------------------------------
