@@ -7,10 +7,43 @@ import httpx
 # Add parent dir to path to import proxy_parsers and tester logic
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import threading
+from datetime import datetime, timezone
+
 from config import config
+
+class RemoteLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.logs = []
+        self.lock = threading.Lock()
+
+    def emit(self, record):
+        try:
+            entry = {
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "level": record.levelname,
+                "message": self.format(record),
+            }
+            with self.lock:
+                self.logs.append(entry)
+                # Cap the local buffer to prevent memory issues if master is down
+                if len(self.logs) > 1000:
+                    self.logs = self.logs[-1000:]
+        except Exception:
+            pass
+
+    def pop_all(self):
+        with self.lock:
+            logs = self.logs[:]
+            self.logs.clear()
+            return logs
+
+remote_log_handler = RemoteLogHandler()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 logger = logging.getLogger("vpn_checker_node")
+logger.addHandler(remote_log_handler)
 
 class NodeApp:
     def __init__(self):
@@ -174,11 +207,43 @@ class NodeApp:
             self.last_run_id = run_id
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
 
+    async def log_sender_loop(self):
+        while True:
+            await asyncio.sleep(5)
+            logs = remote_log_handler.pop_all()
+            if not logs:
+                continue
+            if not self.node_id:
+                # Put them back if not registered
+                with remote_log_handler.lock:
+                    remote_log_handler.logs = logs + remote_log_handler.logs
+                    if len(remote_log_handler.logs) > 1000:
+                        remote_log_handler.logs = remote_log_handler.logs[-1000:]
+                continue
+            try:
+                resp = await self.http_client.post(
+                    f"{self.master_url}/api/node/logs",
+                    json={"node_id": self.node_id, "logs": logs}
+                )
+                if resp.status_code != 200:
+                    with remote_log_handler.lock:
+                        remote_log_handler.logs = logs + remote_log_handler.logs
+                        if len(remote_log_handler.logs) > 1000:
+                            remote_log_handler.logs = remote_log_handler.logs[-1000:]
+            except Exception:
+                with remote_log_handler.lock:
+                    remote_log_handler.logs = logs + remote_log_handler.logs
+                    if len(remote_log_handler.logs) > 1000:
+                        remote_log_handler.logs = remote_log_handler.logs[-1000:]
+
 
 
 async def main():
     logger.info("Initializing VPN Checker Worker Node...")
     app = NodeApp()
+    
+    # Start the log sender loop in the background
+    asyncio.create_task(app.log_sender_loop())
     
     while True:
         try:

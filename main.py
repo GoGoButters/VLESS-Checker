@@ -695,6 +695,37 @@ async def node_heartbeat(request: Request, authorization: str = Header(None)):
     return {"status": "ok"}
 
 
+@app.post("/api/node/logs")
+async def node_logs(request: Request, authorization: str = Header(None)):
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    body = await request.json()
+    node_id = body.get("node_id")
+    logs = body.get("logs", [])
+    
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+        
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        node_name = node.name
+
+    for log in logs:
+        entry = {
+            "timestamp": log.get("timestamp"),
+            "level": log.get("level", "INFO"),
+            "logger": f"worker:{node_name}",
+            "message": log.get("message", "")
+        }
+        log_buffer.append(entry)
+        
+    return {"status": "ok", "received": len(logs)}
+
+
+
 # ---------------------------------------------------------------------------
 # FETCH SUBSCRIPTIONS (replaces run-test)
 # ---------------------------------------------------------------------------
