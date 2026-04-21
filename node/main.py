@@ -45,6 +45,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("vpn_checker_node")
 logger.addHandler(remote_log_handler)
 
+# Capture all logs from proxy_parsers, tester, and speed_tester
+logging.getLogger("vpn_checker").addHandler(remote_log_handler)
+
 class NodeApp:
     def __init__(self):
         self.master_url = config.master_url.rstrip("/")
