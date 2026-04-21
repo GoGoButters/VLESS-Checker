@@ -52,6 +52,20 @@ class TestUrl(SQLModel, table=True):
     position: int = Field(default=0)
 
 
+class ProxyResult(SQLModel, table=True):
+    """Proxy test results. Used by workers as a data container; master reads from NodeProxyResult instead."""
+    __tablename__ = "proxy_results"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    raw_url: str = Field(default="", index=True)
+    ping_ms: int = Field(default=0)
+    tests_passed: int = Field(default=0)
+    tests_total: int = Field(default=0)
+    download_speed_kbps: int = Field(default=0)
+    upload_speed_kbps: int = Field(default=0)
+    speed_score: float = Field(default=0.0)
+    tested_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
 class Settings(SQLModel, table=True):
     __tablename__ = "settings"
     id: Optional[int] = Field(default=None, primary_key=True)
