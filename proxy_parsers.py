@@ -255,28 +255,6 @@ def _parse_hysteria2(url: str) -> dict | None:
     return outbound
 
 
-def replace_proxy_remark(url: str, new_remark: str) -> str:
-    url = url.strip()
-    if url.startswith('vmess://'):
-        b64 = url.replace('vmess://', '')
-        try:
-            import json
-            dec = _decode_base64_padding(b64).decode('utf-8')
-            v = json.loads(dec)
-            v['ps'] = new_remark
-            import base64
-            enc = base64.b64encode(json.dumps(v, separators=(',', ':')).encode('utf-8')).decode('utf-8')
-            return f'vmess://{enc}'
-        except Exception:
-            return url
-    else:
-        # Standard URI format with #fragment
-        if '#' in url:
-            base = url.rsplit('#', 1)[0]
-        else:
-            base = url
-        return f'{base}#{new_remark}'
-
 def extract_host_port(url: str) -> tuple[str, int] | None:
     parsed = parse_proxy_url(url)
     if parsed:

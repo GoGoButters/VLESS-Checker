@@ -40,7 +40,7 @@ from auth import (
 from subs_manager import fetch_and_parse_subscriptions
 from scheduler import start_scheduler, scheduler_status
 from log_buffer import log_buffer, setup_log_buffer
-from proxy_parsers import replace_proxy_remark
+# from proxy_parsers import replace_proxy_remark
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -789,8 +789,7 @@ async def webhook_output(secret_path: str):
 
             lines = []
             for i, p in enumerate(proxies, start=1):
-                renamed = replace_proxy_remark(p.raw_url, str(i))
-                lines.append(renamed)
+                lines.append(p.raw_url)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
         # Global Consensus Webhook: {webhook_secret_path}/global
@@ -823,8 +822,7 @@ async def webhook_output(secret_path: str):
 
             lines = []
             for i, p in enumerate(consensus_list, start=1):
-                renamed = replace_proxy_remark(p["link"], f"GLOBAL-{i}-P{p['passes']}")
-                lines.append(renamed)
+                lines.append(p["link"])
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
         # Main webhook — best proxies across all nodes
@@ -852,8 +850,7 @@ async def webhook_output(secret_path: str):
 
     lines = []
     for i, p in enumerate(proxies, start=1):
-        renamed = replace_proxy_remark(p.raw_url, str(i))
-        lines.append(renamed)
+        lines.append(p.raw_url)
 
     text = "\n".join(lines)
     return PlainTextResponse(text, media_type="text/plain; charset=utf-8")
