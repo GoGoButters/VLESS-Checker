@@ -16,32 +16,32 @@ class RemoteLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.logs = []
-        self.lock = threading.Lock()
+        self._buffer_lock = threading.Lock()
 
     def emit(self, record):
         try:
+            msg = self.format(record)
             entry = {
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "level": record.levelname,
-                "message": self.format(record),
+                "message": msg,
             }
-            with self.lock:
+            with self._buffer_lock:
                 self.logs.append(entry)
-                # Cap the local buffer to prevent memory issues if master is down
                 if len(self.logs) > 1000:
                     self.logs = self.logs[-1000:]
         except Exception:
             pass
 
     def pop_all(self):
-        with self.lock:
+        with self._buffer_lock:
             logs = self.logs[:]
             self.logs.clear()
             return logs
 
 remote_log_handler = RemoteLogHandler()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s', force=True, stream=sys.stdout)
 logger = logging.getLogger("vpn_checker_node")
 logger.addHandler(remote_log_handler)
 
@@ -143,17 +143,13 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
 
-        # 2. Get raw proxies from master and check if list changed
+        # 2. Get raw proxies from master
         run_id, raw_urls = await self.get_proxies()
         if not raw_urls:
             logger.info("No proxies available from master. Idling.")
             return
 
-        if run_id == self.last_run_id:
-            logger.info(f"Master proxy list unchanged (run_id={run_id}). Skipping test cycle.")
-            return
-
-        logger.info(f"New proxy list detected! run_id={run_id} (prev={self.last_run_id}). Starting tests with {len(raw_urls)} proxies...")
+        logger.info(f"Starting tests with {len(raw_urls)} proxies (run_id={run_id})...")
 
         # 3. Test proxies using run_proxy_checks
         from tester import run_proxy_checks

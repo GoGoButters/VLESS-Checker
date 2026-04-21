@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vpn-checker-node:
     build:
@@ -9,6 +7,7 @@ services:
     container_name: checker-node
     restart: unless-stopped
     environment:
+      - PYTHONUNBUFFERED=1
       - MASTER_URL=http://host.docker.internal:8000
       - NODE_TOKEN=your_token_from_settings
       - NODE_NAME=us-east-worker-1
