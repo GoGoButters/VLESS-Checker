@@ -54,7 +54,10 @@ async def _tcp_ping(host: str, port: int, timeout: float = 3.0) -> int | None:
 def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
     """Build sing-box JSON config for a proxy check."""
     return {
-        "log": {"disabled": True, "level": "error"},
+        "log": {
+            "disabled": False,
+            "level": "debug"
+        },
         "inbounds": [
             {
                 "type": "mixed",
@@ -174,7 +177,6 @@ async def _check_single_proxy(
                 logger.debug(f"Proxy check failed for {target_host}:{target_port}: {e}")
                 test_status["checked"] += 1
                 test_status["failed"] += 1
-                return None
             finally:
                 try:
                     proc.terminate()
@@ -222,7 +224,7 @@ async def run_proxy_checks(
                 ping_ms=ping_ms,
                 tests_passed=passed,
                 tests_total=total,
-                last_tested=now
+                tested_at=now
             ))
     return valid
 
@@ -263,8 +265,8 @@ async def _check_single_proxy_internal(
 
             proc = await asyncio.create_subprocess_exec(
                 singbox_path, "run", "-c", config_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
             try:
@@ -304,13 +306,20 @@ async def _check_single_proxy_internal(
 
             finally:
                 try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    if proc.returncode is None:
+                        proc.terminate()
+                        try:
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+                            if stderr:
+                                print("SINGBOX STDERR:", stderr.decode())
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                    else:
+                        stdout, stderr = await proc.communicate()
+                        if stderr:
+                            print("SINGBOX STDERR (CRASH):", stderr.decode())
                 except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                    pass
         finally:
             try:
                 os.unlink(config_path)

@@ -69,6 +69,10 @@ def _parse_vless(url: str) -> dict | None:
                     "enabled": True,
                     "fingerprint": fp
                 }
+                
+    flow = qs.get("flow", [""])[0]
+    if flow:
+        outbound["flow"] = flow
     
     # Transport (ws, grpc)
     net = qs.get("type", ["tcp"])[0]
