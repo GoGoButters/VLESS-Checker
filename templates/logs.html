@@ -7,7 +7,12 @@
             <h1 class="text-2xl font-bold text-white">{{ t(request, 'logs_title') }}</h1>
             <p class="text-sm text-slate-400 mt-1">{{ t(request, 'logs_desc', default='Real-time log stream — auto-updates every 2 seconds') }}</p>
         </div>
-        <div class="flex gap-3">
+        <div class="flex items-center gap-4">
+            <label class="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-300 select-none">
+                <input type="checkbox" id="showMasterToggle" class="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900" onchange="toggleMasterLogs()">
+                {{ t(request, 'logs_show_master') }}
+            </label>
+            <div class="h-4 w-px bg-slate-700"></div>
             <button onclick="clearLogs()" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 glass-light hover:text-white transition-colors">
                 <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                 {{ t(request, 'logs_clear') }}
@@ -43,7 +48,34 @@
 <script>
 let lastId = 0;
 let autoScroll = true;
+let showMasterLogs = false;
 let entries = [];
+
+function toggleMasterLogs() {
+    showMasterLogs = document.getElementById('showMasterToggle').checked;
+    reRenderLogs();
+}
+
+function reRenderLogs() {
+    const content = document.getElementById('logContent');
+    let html = '';
+    let count = 0;
+    
+    for (const e of entries) {
+        if (!showMasterLogs && !e.logger.startsWith('worker:')) {
+            continue;
+        }
+        html += renderEntry(e);
+        count++;
+    }
+    
+    if (count === 0) {
+        content.innerHTML = `<div class="text-slate-500 italic">{{ t(request, 'logs_waiting', default='Waiting for log entries...') }}</div>`;
+    } else {
+        content.innerHTML = html;
+    }
+    document.getElementById('logCount').textContent = count + ` {{ t(request, 'logs_entries') }}`;
+}
 
 function levelColor(level) {
     switch(level) {
@@ -104,18 +136,11 @@ async function fetchLogs() {
         const resp = await fetch(`/api/logs?after_id=${lastId}`);
         const data = await resp.json();
         if (data.entries && data.entries.length > 0) {
-            const content = document.getElementById('logContent');
-            if (entries.length === 0) {
-                content.innerHTML = '';
-            }
-            let html = '';
             for (const e of data.entries) {
                 entries.push(e);
                 lastId = e.id;
-                html += renderEntry(e);
             }
-            content.insertAdjacentHTML('beforeend', html);
-            document.getElementById('logCount').textContent = entries.length + ` {{ t(request, 'logs_entries') }}`;
+            reRenderLogs();
 
             if (autoScroll) {
                 const container = document.getElementById('logContainer');
