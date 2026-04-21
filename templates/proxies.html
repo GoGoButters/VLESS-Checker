@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Valid Proxies — VPN Checker{% endblock %}
+{% block title %}{{ t(request, 'proxies_title') }} — {{ t(request, 'app_title') }}{% endblock %}
 
 {% block content %}
 <div class="flex items-center justify-between mb-8">
     <div>
-        <h1 class="text-3xl font-bold text-white">Valid Proxies</h1>
-        <p class="text-slate-400 mt-1">Aggregated results from all worker nodes, ranked by node confirmations → speed → ping</p>
+        <h1 class="text-3xl font-bold text-white">{{ t(request, 'proxies_title') }}</h1>
+        <p class="text-slate-400 mt-1">{{ t(request, 'proxies_subtitle', default='Aggregated results from all worker nodes, ranked by node confirmations → speed → ping') }}</p>
     </div>
     <span class="px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-semibold">
-        {{ proxies|length }} working
+        {{ proxies|length }} {{ t(request, 'proxies_working', default='working') }}
     </span>
 </div>
 
@@ -19,14 +19,14 @@
             <thead>
                 <tr class="border-b border-slate-700/30">
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12">#</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Proxy Config</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">Nodes</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Tests</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Best Ping</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Avg DL</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">Avg UL</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">Score</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32 whitespace-nowrap">Tested</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'proxies_col_config', default='Proxy Config') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">{{ t(request, 'proxies_col_nodes', default='Nodes') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_tests', default='Tests') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_ping', default='Best Ping') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_dl', default='Avg DL') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_ul', default='Avg UL') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">{{ t(request, 'proxies_col_score', default='Score') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32 whitespace-nowrap">{{ t(request, 'proxies_col_tested', default='Tested') }}</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-700/20">
@@ -41,7 +41,7 @@
                     </td>
                     <td class="px-4 py-4">
                         <span class="px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-[11px] font-bold whitespace-nowrap">
-                            {{ proxy.node_count }} node{{ 's' if proxy.node_count != 1 else '' }}
+                            {{ proxy.node_count }} {{ t(request, 'proxies_col_nodes', default='Nodes')|lower }}
                         </span>
                     </td>
                     <td class="px-4 py-4">
@@ -86,7 +86,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
             </svg>
         </div>
-        <p class="text-slate-400 text-sm">No valid proxies yet. Deploy worker nodes and fetch subscriptions from the Dashboard.</p>
+        <p class="text-slate-400 text-sm">{{ t(request, 'proxies_none', default='No valid proxies yet. Deploy worker nodes and fetch subscriptions from the Dashboard.') }}</p>
     </div>
     {% endif %}
 </div>

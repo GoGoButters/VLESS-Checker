@@ -129,22 +129,33 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
                         </svg>
                     </div>
-                    <span class="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">VPN Checker</span>
+                    <span class="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{{ t(request, 'app_title') }}</span>
                 </div>
                 <div class="flex items-center gap-8">
-                    <a href="/" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/' %}active text-white{% endif %}">Dashboard</a>
-                    <a href="/subscriptions" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/subscriptions' %}active text-white{% endif %}">Subscriptions</a>
-                    <a href="/proxies" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/proxies' %}active text-white{% endif %}">Proxies</a>
-                    <a href="/test-urls" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/test-urls' %}active text-white{% endif %}">Test URLs</a>
-                    <a href="/settings" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/settings' %}active text-white{% endif %}">Settings</a>
-                    <a href="/logs" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/logs' %}active text-white{% endif %}">Logs</a>
-                    <a href="/nodes" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/nodes' %}active text-white{% endif %}">Nodes</a>
+                    <div class="flex items-center gap-2 mr-2">
+                        <button onclick="setLang('en')" class="text-xs transition-colors {% if request.cookies.get('lang', 'en') == 'en' %}text-white font-bold{% else %}text-slate-400 hover:text-white{% endif %}">EN</button>
+                        <span class="text-slate-600">|</span>
+                        <button onclick="setLang('ru')" class="text-xs transition-colors {% if request.cookies.get('lang') == 'ru' %}text-white font-bold{% else %}text-slate-400 hover:text-white{% endif %}">RU</button>
+                    </div>
+                    <a href="/" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/' %}active text-white{% endif %}">{{ t(request, 'nav_dashboard') }}</a>
+                    <a href="/subscriptions" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/subscriptions' %}active text-white{% endif %}">{{ t(request, 'nav_subscriptions') }}</a>
+                    <a href="/proxies" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/proxies' %}active text-white{% endif %}">{{ t(request, 'nav_proxies') }}</a>
+                    <a href="/test-urls" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/test-urls' %}active text-white{% endif %}">{{ t(request, 'nav_test_urls') }}</a>
+                    <a href="/settings" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/settings' %}active text-white{% endif %}">{{ t(request, 'nav_settings') }}</a>
+                    <a href="/logs" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/logs' %}active text-white{% endif %}">{{ t(request, 'nav_logs') }}</a>
+                    <a href="/nodes" class="nav-link text-sm font-medium text-slate-300 hover:text-white {% if request.url.path == '/nodes' %}active text-white{% endif %}">{{ t(request, 'nav_nodes') }}</a>
                     <div class="h-5 w-px bg-slate-600"></div>
-                    <a href="/logout" class="text-sm text-slate-400 hover:text-rose-400 transition-colors">Logout</a>
+                    <a href="/logout" class="text-sm text-slate-400 hover:text-rose-400 transition-colors">{{ t(request, 'nav_logout') }}</a>
                 </div>
             </div>
         </div>
     </nav>
+    <script>
+        function setLang(lang) {
+            document.cookie = "lang=" + lang + "; path=/; max-age=31536000";
+            window.location.reload();
+        }
+    </script>
     {% endif %}
 
     <!-- Content -->

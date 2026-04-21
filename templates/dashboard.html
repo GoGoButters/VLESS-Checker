@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — VPN Checker{% endblock %}
+{% block title %}{{ t(request, 'dash_title') }} — {{ t(request, 'app_title') }}{% endblock %}
 
 {% block content %}
 <div class="mb-8">
-    <h1 class="text-3xl font-bold text-white">Dashboard</h1>
-    <p class="text-slate-400 mt-1">Manager panel — all testing is performed by worker nodes</p>
+    <h1 class="text-3xl font-bold text-white">{{ t(request, 'dash_title') }}</h1>
+    <p class="text-slate-400 mt-1">{{ t(request, 'dash_subtitle', default='Manager panel — all testing is performed by worker nodes') }}</p>
 </div>
 
 <!-- Stats Grid -->
@@ -19,7 +19,7 @@
             </div>
         </div>
         <div class="text-3xl font-bold text-white">{{ sub_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Subscriptions</div>
+        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_total_subs') }}</div>
     </div>
 
     <!-- Raw Proxies (fetched) -->
@@ -32,7 +32,7 @@
             </div>
         </div>
         <div class="text-3xl font-bold text-amber-400">{{ raw_proxy_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Raw Proxies</div>
+        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_raw_proxies', default='Raw Proxies') }}</div>
     </div>
 
     <!-- Valid Proxies (from nodes) -->
@@ -45,7 +45,7 @@
             </div>
         </div>
         <div class="text-3xl font-bold text-emerald-400">{{ valid_proxy_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Valid Proxies</div>
+        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_valid_proxies', default='Valid Proxies') }}</div>
     </div>
 
     <!-- Test URLs -->
@@ -58,7 +58,7 @@
             </div>
         </div>
         <div class="text-3xl font-bold text-white">{{ test_url_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Test URLs</div>
+        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'nav_test_urls') }}</div>
     </div>
 
     <!-- Active Nodes -->
@@ -71,7 +71,7 @@
             </div>
         </div>
         <div class="text-3xl font-bold text-white">{{ node_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Worker Nodes</div>
+        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'nodes_title') }}</div>
     </div>
 </div>
 
@@ -86,7 +86,7 @@
             </div>
             <div>
                 <h2 class="text-lg font-semibold text-white flex items-center gap-2">
-                    Auto-Fetch Scheduler
+                    {{ t(request, 'dash_scheduler', default='Auto-Fetch Scheduler') }}
                     <span id="scheduler-badge" class="text-xs font-medium px-2 py-0.5 rounded-full
                         {% if settings.schedule_interval_minutes > 0 %}
                             bg-cyan-500/15 text-cyan-400 border border-cyan-500/20
@@ -94,17 +94,17 @@
                             bg-slate-500/15 text-slate-400 border border-slate-500/20
                         {% endif %}">
                         {% if settings.schedule_interval_minutes > 0 %}
-                            Every {{ settings.schedule_interval_minutes }} min
+                            {{ t(request, 'dash_every', default='Every') }} {{ settings.schedule_interval_minutes }} {{ t(request, 'settings_minutes') }}
                         {% else %}
-                            Disabled
+                            {{ t(request, 'dash_disabled', default='Disabled') }}
                         {% endif %}
                     </span>
                 </h2>
                 <p id="scheduler-next" class="text-sm text-slate-400 mt-0.5">
                     {% if settings.schedule_interval_minutes > 0 %}
-                        Waiting for next fetch…
+                        {{ t(request, 'dash_waiting_fetch', default='Waiting for next fetch…') }}
                     {% else %}
-                        Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.
+                        {{ t(request, 'dash_enable_in_settings', default='Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.')|safe }}
                     {% endif %}
                 </p>
             </div>
@@ -117,20 +117,20 @@
     <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
             <h2 class="text-xl font-semibold text-white flex items-center gap-3">
-                Subscription Fetcher
+                {{ t(request, 'dash_fetcher', default='Subscription Fetcher') }}
                 {% if fetch_status.running %}
                 <span class="flex items-center gap-2 text-sm font-normal text-amber-400">
                     <span class="w-2 h-2 rounded-full bg-amber-400 pulse-dot"></span>
-                    Fetching…
+                    {{ t(request, 'dash_fetching', default='Fetching…') }}
                 </span>
                 {% else %}
                 <span class="flex items-center gap-2 text-sm font-normal text-slate-500">
                     <span class="w-2 h-2 rounded-full bg-slate-500"></span>
-                    Idle
+                    {{ t(request, 'dash_idle', default='Idle') }}
                 </span>
                 {% endif %}
             </h2>
-            <p class="text-sm text-slate-400 mt-1">Fetch all subscriptions → deduplicate → store raw proxies → workers test them</p>
+            <p class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_fetch_desc', default='Fetch all subscriptions → deduplicate → store raw proxies → workers test them') }}</p>
         </div>
         <form method="POST" action="/fetch-subs">
             <button type="submit" id="btn-fetch"
@@ -139,7 +139,7 @@
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
-                Fetch Subscriptions
+                {{ t(request, 'dash_fetch_now') }}
             </button>
         </form>
     </div>
@@ -147,8 +147,8 @@
     <!-- Progress -->
     <div id="progress-section" class="mt-6 {% if not fetch_status.running %}hidden{% endif %}">
         <div class="flex items-center justify-between text-sm mb-2">
-            <span class="text-slate-400">Phase: <span id="fetch-phase" class="text-white font-medium">{{ fetch_status.current_phase }}</span></span>
-            <span class="text-slate-400">Proxies found: <span id="fetch-proxies" class="text-emerald-400 font-semibold">{{ fetch_status.fetched_proxies }}</span></span>
+            <span class="text-slate-400">{{ t(request, 'dash_phase', default='Phase:') }} <span id="fetch-phase" class="text-white font-medium">{{ fetch_status.current_phase }}</span></span>
+            <span class="text-slate-400">{{ t(request, 'dash_proxies_found', default='Proxies found:') }} <span id="fetch-proxies" class="text-emerald-400 font-semibold">{{ fetch_status.fetched_proxies }}</span></span>
         </div>
         <div class="w-full h-2 bg-slate-700/50 rounded-full overflow-hidden">
             <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
@@ -159,36 +159,36 @@
 
 <!-- Proxy Distribution (worker results) -->
 <div class="glass rounded-2xl p-6 mb-8">
-    <h2 class="text-lg font-semibold text-white mb-1">Proxy Distribution</h2>
-    <p class="text-sm text-slate-400 mb-5">Подписки для VPN-клиентов. Данные формируются из результатов тестирования воркеров.</p>
+    <h2 class="text-lg font-semibold text-white mb-1">{{ t(request, 'dash_proxy_dist', default='Proxy Distribution') }}</h2>
+    <p class="text-sm text-slate-400 mb-5">{{ t(request, 'dash_proxy_dist_desc', default='Subscriptions for VPN clients. Data is formed from worker test results.') }}</p>
 
     <div class="space-y-4">
         <!-- Main webhook -->
         <div class="flex items-center gap-3">
-            <span class="text-xs font-semibold text-indigo-400 w-16 flex-shrink-0">Main</span>
+            <span class="text-xs font-semibold text-indigo-400 w-16 flex-shrink-0">{{ t(request, 'dash_main_hook', default='Main') }}</span>
             <code id="webhook-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-indigo-400 text-sm font-mono truncate">
                 {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}
             </code>
             <button onclick="navigator.clipboard.writeText(document.getElementById('webhook-url').textContent.trim())"
                 class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-slate-300 hover:text-white hover:border-indigo-500/30 transition-all text-xs">
-                Copy
+                {{ t(request, 'dash_copy', default='Copy') }}
             </button>
         </div>
 
         <!-- Global consensus -->
         <div class="flex items-center gap-3">
-            <span class="text-xs font-semibold text-emerald-400 w-16 flex-shrink-0">Global</span>
+            <span class="text-xs font-semibold text-emerald-400 w-16 flex-shrink-0">{{ t(request, 'dash_global_hook', default='Global') }}</span>
             <code id="global-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
                 {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
             </code>
             <button onclick="navigator.clipboard.writeText(document.getElementById('global-url').textContent.trim())"
                 class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-slate-300 hover:text-white hover:border-emerald-500/30 transition-all text-xs">
-                Copy
+                {{ t(request, 'dash_copy', default='Copy') }}
             </button>
         </div>
     </div>
 
-    <p class="text-xs text-slate-500 mt-4">Main — лучшие прокси по скорости. Global — ранжирование по числу подтвердивших нод.</p>
+    <p class="text-xs text-slate-500 mt-4">{{ t(request, 'dash_hook_desc', default='Main — best proxies by speed. Global — ranked by number of confirming nodes.') }}</p>
 </div>
 
 <!-- AJAX polling for fetch progress + scheduler status -->

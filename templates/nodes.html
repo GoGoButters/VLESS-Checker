@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Nodes — VPN Checker{% endblock %}
+{% block title %}{{ t(request, 'nodes_title') }} — {{ t(request, 'app_title') }}{% endblock %}
 {% block content %}
 <div class="space-y-6">
     <div class="flex items-center justify-between">
         <div>
-            <h1 class="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Distributed Nodes</h1>
-            <p class="text-slate-400 mt-2">Manage remote proxy checkers and view their status</p>
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">{{ t(request, 'nodes_title') }}</h1>
+            <p class="text-slate-400 mt-2">{{ t(request, 'nodes_desc', default='Manage remote proxy checkers and view their status') }}</p>
         </div>
         <div class="glass-light px-5 py-3 rounded-xl border border-indigo-500/20">
-            <div class="text-sm text-slate-400">Total Active Nodes</div>
+            <div class="text-sm text-slate-400">{{ t(request, 'nodes_total_active', default='Total Active Nodes') }}</div>
             <div class="text-2xl font-bold text-white flex items-center gap-2">
                 <div class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></div>
                 {{ nodes|selectattr('is_online', 'equalto', true)|list|length }} <span class="text-lg text-slate-500 font-normal">/ {{ nodes|length }}</span>
@@ -18,20 +18,20 @@
 
     <!-- Node Instructions -->
     <div class="glass p-6 rounded-2xl border-l-4 border-l-indigo-500">
-        <h3 class="text-lg font-semibold text-white mb-2">How to deploy a new Node</h3>
-        <p class="text-sm text-slate-300 mb-4">Nodes are headless Docker containers that pull proxy lists from this master panel, check them locally using Sing-Box, and report the results back. This allows you to build regional proxy lists and bypass DPI blocks from different IPs.</p>
+        <h3 class="text-lg font-semibold text-white mb-2">{{ t(request, 'nodes_how_to_deploy', default='How to deploy a new Node') }}</h3>
+        <p class="text-sm text-slate-300 mb-4">{{ t(request, 'nodes_instructions', default='Nodes are headless Docker containers that pull proxy lists from this master panel, check them locally using Sing-Box, and report the results back. This allows you to build regional proxy lists and bypass DPI blocks from different IPs.') }}</p>
         
         <div class="bg-slate-900/50 rounded-xl p-4 font-mono text-xs text-slate-300 overflow-x-auto">
-            <div class="text-indigo-400 mb-1"># 1. Clone the repository on your remote worker server:</div>
+            <div class="text-indigo-400 mb-1"># 1. {{ t(request, 'nodes_step_1', default='Clone the repository on your remote worker server:') }}</div>
             <div>git clone https://github.com/GoGoButters/VLESS-Checker.git</div>
             <div>cd VLESS-Checker/node</div>
             <br>
-            <div class="text-indigo-400 mb-1"># 2. Add your node token and master URL to docker-compose.yml:</div>
+            <div class="text-indigo-400 mb-1"># 2. {{ t(request, 'nodes_step_2', default='Add your node token and master URL to docker-compose.yml:') }}</div>
             <div>nano docker-compose.yml</div>
             <div><span class="text-slate-500"># Set MASTER_URL=https://<span class="text-emerald-400">YOUR_PANEL_DOMAIN</span></span></div>
             <div><span class="text-slate-500"># Set NODE_TOKEN=<span class="text-emerald-400">{{ settings.node_api_token if settings else 'NOT_SET' }}</span></span></div>
             <br>
-            <div class="text-indigo-400 mb-1"># 3. Build and run the node container</div>
+            <div class="text-indigo-400 mb-1"># 3. {{ t(request, 'nodes_step_3', default='Build and run the node container') }}</div>
             <div>docker compose up --build -d</div>
         </div>
     </div>
@@ -50,31 +50,31 @@
                     <div class="text-sm text-slate-400 font-medium">📍 {{ node.region }}</div>
                 </div>
                 <span class="px-2.5 py-1 rounded-full text-xs font-semibold {% if node.is_online %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-rose-500/10 text-rose-400 border border-rose-500/20{% endif %}">
-                    {% if node.is_online %}ONLINE{% else %}OFFLINE{% endif %}
+                    {% if node.is_online %}{{ t(request, 'nodes_online', default='ONLINE') }}{% else %}{{ t(request, 'nodes_offline', default='OFFLINE') }}{% endif %}
                 </span>
             </div>
 
             <div class="space-y-3 mb-6">
                 <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">IP Address:</span>
+                    <span class="text-slate-400">{{ t(request, 'nodes_ip', default='IP Address:') }}</span>
                     <span class="text-slate-200 font-mono">{{ node.ip }}</span>
                 </div>
                 <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">Last Heartbeat:</span>
+                    <span class="text-slate-400">{{ t(request, 'nodes_last_heartbeat', default='Last Heartbeat:') }}</span>
                     <span class="text-slate-200" title="{{ node.last_heartbeat }}">
                         {% if node.last_heartbeat %}
                             {{ node.last_heartbeat[:19].replace('T', ' ') }}
                         {% else %}
-                            Never
+                            {{ t(request, 'nodes_never', default='Never') }}
                         {% endif %}
                     </span>
                 </div>
                 <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">Checked Proxies:</span>
+                    <span class="text-slate-400">{{ t(request, 'nodes_checked', default='Checked Proxies:') }}</span>
                     <span class="text-slate-200 font-semibold">{{ node.proxies_checked }}</span>
                 </div>
                 <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">Passed Proxies:</span>
+                    <span class="text-slate-400">{{ t(request, 'nodes_passed', default='Passed Proxies:') }}</span>
                     <span class="text-emerald-400 font-semibold">{{ node.proxies_passed }}</span>
                 </div>
             </div>
@@ -82,9 +82,9 @@
             <div class="flex gap-2">
                 <button onclick="copyWebhook('{{ request.base_url }}{{ settings.webhook_secret_path }}/node/{{ node.id }}')" class="flex-1 px-4 py-2 rounded-lg text-sm font-medium glass-light hover:bg-indigo-500/20 text-indigo-300 transition-colors flex items-center justify-center gap-2">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                    Copy List URL
+                    {{ t(request, 'nodes_copy_url', default='Copy List URL') }}
                 </button>
-                <form action="/nodes/delete/{{ node.id }}" method="post" onsubmit="return confirm('Delete this node? All its proxy results will be lost.');">
+                <form action="/nodes/delete/{{ node.id }}" method="post" onsubmit="return confirm(`{{ t(request, 'nodes_delete_confirm', default='Delete this node? All its proxy results will be lost.') }}`);">
                     <button type="submit" class="px-4 py-2 rounded-lg text-sm font-medium border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                     </button>
@@ -98,8 +98,8 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
                 </svg>
             </div>
-            <h3 class="text-xl font-bold text-slate-300">No Nodes Deployed yet</h3>
-            <p class="text-slate-500 mt-2">Follow the instructions above to connect your first worker node.</p>
+            <h3 class="text-xl font-bold text-slate-300">{{ t(request, 'nodes_no_nodes', default='No Nodes Deployed yet') }}</h3>
+            <p class="text-slate-500 mt-2">{{ t(request, 'nodes_no_nodes_desc', default='Follow the instructions above to connect your first worker node.') }}</p>
         </div>
         {% endfor %}
     </div>
@@ -107,7 +107,7 @@
 
 <div id="toast" class="fixed bottom-4 right-4 transform translate-y-20 opacity-0 transition-all duration-300 bg-emerald-500 text-white px-6 py-3 rounded-xl shadow-lg font-medium shadow-emerald-500/20 z-50 flex items-center gap-2">
     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-    Node Proxy URL Copied!
+    {{ t(request, 'nodes_copied', default='Node Proxy URL Copied!') }}
 </div>
 
 <script>

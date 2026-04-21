@@ -58,6 +58,19 @@ app = FastAPI(title="VPN Checker", version="3.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+from i18n import translations
+
+def t(request: Request, key: str, **kwargs):
+    lang = request.cookies.get("lang", "en")
+    if lang not in translations:
+        lang = "en"
+    text = translations[lang].get(key, key)
+    if kwargs:
+        text = text.format(**kwargs)
+    return text
+
+templates.env.globals["t"] = t
+
 # Global fetch status (replaces test_status)
 fetch_status = {
     "running": False,
