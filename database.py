@@ -1,4 +1,4 @@
-"""Database models and async engine setup for VPN Checker."""
+"""Database models and engine setup for VPN Checker."""
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -18,7 +18,7 @@ engine = create_engine(
 )
 
 
-# Enable WAL mode for concurrent reads/writes (Zero-downtime webhook fix)
+# Enable WAL mode for concurrent reads/writes
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
@@ -34,17 +34,12 @@ class Subscription(SQLModel, table=True):
     added_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
-class ProxyResult(SQLModel, table=True):
-    __tablename__ = "proxy_results"
+class RawProxy(SQLModel, table=True):
+    """Raw proxy URLs fetched from subscriptions, awaiting worker testing."""
+    __tablename__ = "raw_proxies"
     id: Optional[int] = Field(default=None, primary_key=True)
     raw_url: str = Field(unique=True, index=True)
-    ping_ms: int = Field(default=0)
-    tests_passed: int = Field(default=0)
-    tests_total: int = Field(default=0)
-    download_speed_kbps: int = Field(default=0)
-    upload_speed_kbps: int = Field(default=0)
-    speed_score: float = Field(default=0.0)
-    last_tested: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    fetched_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class TestUrl(SQLModel, table=True):
@@ -71,7 +66,7 @@ class Settings(SQLModel, table=True):
     node_api_token: str = Field(default="")
     node_check_top_n: int = Field(default=50)
 
-    # Added: Global Consensus settings
+    # Global Consensus settings
     global_sub_min_nodes: int = Field(default=1)
     global_sub_top_n: int = Field(default=50)
 
@@ -138,21 +133,10 @@ def _migrate_db():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
 
-        # ProxyResult migrations
-        cursor = conn.execute("PRAGMA table_info(proxy_results)")
-        existing_pr = {row[1] for row in cursor.fetchall()}
-        pr_migrations = [
-            ("download_speed_kbps", "INTEGER DEFAULT 0"),
-            ("upload_speed_kbps", "INTEGER DEFAULT 0"),
-            ("speed_score", "REAL DEFAULT 0.0"),
-        ]
-        for col_name, col_def in pr_migrations:
-            if col_name not in existing_pr:
-                conn.execute(f"ALTER TABLE proxy_results ADD COLUMN {col_name} {col_def}")
-
         conn.commit()
         conn.close()
 
+        # Drop legacy tables
         with engine.begin() as conn:
             try:
                 conn.execute(text("DROP TABLE IF EXISTS valid_proxies"))

@@ -1,14 +1,13 @@
-"""Scheduler — runs the full test pipeline on a configurable interval."""
+"""Scheduler — periodically fetches subscriptions and stores raw proxies for workers."""
 
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete
 
-from database import Settings, engine
+from database import Settings, Subscription, RawProxy, engine
 from subs_manager import fetch_and_parse_subscriptions
-from tester import run_full_test, test_status
 
 logger = logging.getLogger("vpn_checker.scheduler")
 
@@ -31,7 +30,7 @@ def _read_interval() -> int:
 
 
 async def _scheduler_loop():
-    """Main scheduler loop — runs forever, sleeps between test cycles."""
+    """Main scheduler loop — runs forever, sleeps between fetch cycles."""
     logger.info("Scheduler loop started")
     while True:
         try:
@@ -41,7 +40,6 @@ async def _scheduler_loop():
             if interval <= 0:
                 scheduler_status["enabled"] = False
                 scheduler_status["next_run_at"] = None
-                # Check again in 30 seconds whether user enabled it
                 await asyncio.sleep(30)
                 continue
 
@@ -49,12 +47,11 @@ async def _scheduler_loop():
             next_run = datetime.now(timezone.utc) + timedelta(minutes=interval)
             scheduler_status["next_run_at"] = next_run.isoformat()
 
-            # Sleep until next run (in 60-second chunks so we can pick up setting changes)
+            # Sleep until next run (in 30-second chunks to pick up setting changes)
             while True:
                 now = datetime.now(timezone.utc)
                 if now >= next_run:
                     break
-                # Re-read interval to detect changes
                 new_interval = _read_interval()
                 if new_interval != interval:
                     interval = new_interval
@@ -67,27 +64,22 @@ async def _scheduler_loop():
                     scheduler_status["next_run_at"] = next_run.isoformat()
                 await asyncio.sleep(min(30, max(1, (next_run - now).total_seconds())))
 
-            # If interval became 0 while waiting, loop back to the top
             if interval <= 0:
                 continue
 
-            # Skip if a test is already running (e.g. manual trigger)
-            if test_status.get("running"):
-                logger.info("Scheduler: test already running, skipping this cycle")
-                continue
+            # Run the fetch pipeline
+            logger.info("Scheduler: starting scheduled subscription fetch")
 
-            # Run the test pipeline
-            logger.info("Scheduler: starting scheduled test")
-            test_status["current_phase"] = "fetching"
-            test_status["running"] = True
-
-            vless_links = await fetch_and_parse_subscriptions()
-            if vless_links:
-                await run_full_test(vless_links)
+            proxy_links = await fetch_and_parse_subscriptions()
+            if proxy_links:
+                with Session(engine) as session:
+                    session.exec(delete(RawProxy))
+                    for url in proxy_links:
+                        session.add(RawProxy(raw_url=url))
+                    session.commit()
+                logger.info(f"Scheduler: fetched {len(proxy_links)} proxies for workers")
             else:
-                test_status["current_phase"] = "done"
-                test_status["running"] = False
-                logger.warning("Scheduler: no VLESS links found")
+                logger.warning("Scheduler: no proxy links found from subscriptions")
 
             scheduler_status["last_run_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -96,9 +88,7 @@ async def _scheduler_loop():
             break
         except Exception as e:
             logger.error(f"Scheduler error: {e}", exc_info=True)
-            test_status["running"] = False
-            test_status["current_phase"] = "error"
-            await asyncio.sleep(60)  # backoff on error
+            await asyncio.sleep(60)
 
 
 def start_scheduler():

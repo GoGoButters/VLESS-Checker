@@ -4,7 +4,7 @@
 {% block content %}
 <div class="mb-8">
     <h1 class="text-3xl font-bold text-white">Settings</h1>
-    <p class="text-slate-400 mt-1">Configure proxy checker parameters</p>
+    <p class="text-slate-400 mt-1">Configure manager and worker parameters</p>
 </div>
 
 {% if saved %}
@@ -18,47 +18,48 @@
 
 <form method="POST" action="/settings" class="space-y-6">
     <div class="glass rounded-2xl p-6 glow-accent">
-        <h2 class="text-lg font-semibold text-white mb-6">Test Parameters</h2>
+        <h2 class="text-lg font-semibold text-white mb-2">Worker Test Parameters</h2>
+        <p class="text-sm text-slate-400 mb-6">These settings are pushed to all worker nodes via the Node API.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
                 <label for="ping_threshold_ms" class="block text-sm font-medium text-slate-300 mb-2">Ping Threshold (ms)</label>
                 <input type="number" name="ping_threshold_ms" id="ping_threshold_ms" min="50" max="10000"
                     value="{{ settings.ping_threshold_ms }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Proxies with TCP ping above this value will be skipped</p>
+                <p class="text-xs text-slate-500 mt-1">Workers will skip proxies with TCP ping above this value</p>
             </div>
             <div>
                 <label for="concurrent_checks_limit" class="block text-sm font-medium text-slate-300 mb-2">Concurrent Checks</label>
                 <input type="number" name="concurrent_checks_limit" id="concurrent_checks_limit" min="1" max="500"
                     value="{{ settings.concurrent_checks_limit }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Max simultaneous xray proxy checks (semaphore limit)</p>
+                <p class="text-xs text-slate-500 mt-1">Max simultaneous proxy checks per worker node</p>
             </div>
             <div>
                 <label for="http_timeout_s" class="block text-sm font-medium text-slate-300 mb-2">HTTP Check Timeout (seconds)</label>
                 <input type="number" name="http_timeout_s" id="http_timeout_s" min="1" max="60"
                     value="{{ settings.http_timeout_s }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Timeout for each test URL check per proxy</p>
+                <p class="text-xs text-slate-500 mt-1">Timeout for each test URL check per proxy on workers</p>
             </div>
             <div>
-                <label for="speed_test_top_n" class="block text-sm font-medium text-slate-300 mb-2">Speed Test Top-N</label>
+                <label for="speed_test_top_n" class="block text-sm font-medium text-slate-300 mb-2">Speed Test Top-N (per worker)</label>
                 <input type="number" name="speed_test_top_n" id="speed_test_top_n" min="0" max="50000"
                     value="{{ settings.speed_test_top_n }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Run active download/upload benchmark on the top N proxies. 0 to disable.</p>
+                <p class="text-xs text-slate-500 mt-1">Workers will run download/upload benchmark on top N proxies. 0 to disable.</p>
             </div>
         </div>
     </div>
 
     <div class="glass rounded-2xl p-6">
-        <h2 class="text-lg font-semibold text-white mb-6">Scheduler</h2>
+        <h2 class="text-lg font-semibold text-white mb-6">Auto-Fetch Scheduler</h2>
         <div>
-            <label for="schedule_interval_minutes" class="block text-sm font-medium text-slate-300 mb-2">Schedule Interval (minutes)</label>
+            <label for="schedule_interval_minutes" class="block text-sm font-medium text-slate-300 mb-2">Fetch Interval (minutes)</label>
             <input type="number" name="schedule_interval_minutes" id="schedule_interval_minutes" min="0" max="10080"
                 value="{{ settings.schedule_interval_minutes }}"
                 class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-            <p class="text-xs text-slate-500 mt-1">Auto-run the full test every N minutes. Set to 0 to disable scheduling. E.g. 60 = every hour, 1440 = daily.</p>
+            <p class="text-xs text-slate-500 mt-1">Auto-fetch subscriptions every N minutes. Workers will pick up new proxies automatically. 0 = disabled.</p>
         </div>
     </div>
 
@@ -73,14 +74,14 @@
                         value="{{ settings.webhook_secret_path }}"
                         class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm font-mono">
                 </div>
-                <p class="text-xs text-slate-500 mt-1">Public endpoint for distributing working Proxy configs (no auth required)</p>
+                <p class="text-xs text-slate-500 mt-1">Public endpoint for distributing working proxy configs (no auth required)</p>
             </div>
             <div>
                 <label for="webhook_max_proxies" class="block text-sm font-medium text-slate-300 mb-2">Max Proxies in Webhook</label>
                 <input type="number" name="webhook_max_proxies" id="webhook_max_proxies" min="0" max="10000"
                     value="{{ settings.webhook_max_proxies }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Limit webhook output to the top N proxies by lowest ping. Set to 0 for unlimited.</p>
+                <p class="text-xs text-slate-500 mt-1">Limit webhook output to the top N proxies. Set to 0 for unlimited.</p>
             </div>
         </div>
     </div>
@@ -97,14 +98,14 @@
                         Regenerate
                     </button>
                 </div>
-                <p class="text-xs text-slate-500 mt-1">Bearer token used by remote nodes to authenticate.</p>
+                <p class="text-xs text-slate-500 mt-1">Bearer token used by remote worker nodes to authenticate.</p>
             </div>
             <div>
-                <label for="node_check_top_n" class="block text-sm font-medium text-slate-300 mb-2">Node Check Top-N</label>
-                <input type="number" name="node_check_top_n" id="node_check_top_n" min="1" max="5000"
+                <label for="node_check_top_n" class="block text-sm font-medium text-slate-300 mb-2">Proxies Per Worker</label>
+                <input type="number" name="node_check_top_n" id="node_check_top_n" min="0" max="50000"
                     value="{{ settings.node_check_top_n }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Number of top proxies to send to remote nodes for re-verification.</p>
+                <p class="text-xs text-slate-500 mt-1">Max number of raw proxies to send to each worker. 0 = all proxies.</p>
             </div>
         </div>
     </div>
@@ -117,7 +118,7 @@
                 <input type="number" name="global_sub_top_n" id="global_sub_top_n" min="0" max="5000"
                     value="{{ settings.global_sub_top_n }}"
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Maximum number of proxies in the global subscription. Set to 0 for unlimited. The list will automatically rank proxies dynamically, placing those that succeeded on the highest number of nodes at the very top.</p>
+                <p class="text-xs text-slate-500 mt-1">Maximum number of proxies in the global subscription. Ranks by cross-node consensus.</p>
             </div>
         </div>
     </div>

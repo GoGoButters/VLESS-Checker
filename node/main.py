@@ -53,7 +53,7 @@ class NodeApp:
             return None
 
     async def get_proxies(self):
-        """Fetch proxies and run_id from master. Returns (run_id, proxy_list)."""
+        """Fetch raw proxies and run_id from master. Returns (run_id, proxy_list)."""
         try:
             resp = await self.http_client.get(f"{self.master_url}/api/node/proxies")
             if resp.status_code == 200:
@@ -87,13 +87,13 @@ class NodeApp:
             return False
 
     async def run_testing_cycle(self):
-        # 1. Get configs from master
+        # 1. Get test config from master
         test_config = await self.get_test_config()
         if not test_config:
             logger.warning("Could not fetch test config, skipping cycle.")
             return
 
-        # Build test URL dicts (run_proxy_checks expects list[dict])
+        # Build test URL dicts
         test_urls = []
         for u in test_config.get("test_urls", []):
             test_urls.append({
@@ -107,19 +107,19 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
 
-        # 2. Get Proxies and check if list changed
+        # 2. Get raw proxies from master and check if list changed
         run_id, raw_urls = await self.get_proxies()
         if not raw_urls:
-            logger.info("No proxies provided by master. Idling.")
+            logger.info("No proxies available from master. Idling.")
             return
 
         if run_id == self.last_run_id:
-            logger.info(f"Master list unchanged (run_id={run_id}). Skipping test cycle.")
+            logger.info(f"Master proxy list unchanged (run_id={run_id}). Skipping test cycle.")
             return
 
         logger.info(f"New proxy list detected! run_id={run_id} (prev={self.last_run_id}). Starting tests with {len(raw_urls)} proxies...")
 
-        # 3. Test Proxies using run_proxy_checks (takes raw URL strings)
+        # 3. Test proxies using run_proxy_checks
         from tester import run_proxy_checks
 
         status_dict = {
@@ -172,25 +172,21 @@ class NodeApp:
         reported = await self.report_results(final_results, checked_count=status_dict["checked"])
         if reported:
             self.last_run_id = run_id
-            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new list.")
+            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
 
 
 
 async def main():
-    logger.info("Initializing VPN Checker Node...")
+    logger.info("Initializing VPN Checker Worker Node...")
     app = NodeApp()
     
     while True:
         try:
             logger.info("Waking up for check-in...")
-            if not app.node_id:
-                await app.register()
-            else:
-                # Basic heartbeat to keep session alive and notify IP changes
-                await app.register()
+            # Always register/re-register to keep heartbeat alive
+            await app.register()
                 
             if app.node_id:
-                # Cycle
                 await app.run_testing_cycle()
                 
         except Exception as e:

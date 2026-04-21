@@ -4,7 +4,7 @@
 {% block content %}
 <div class="mb-8">
     <h1 class="text-3xl font-bold text-white">Dashboard</h1>
-    <p class="text-slate-400 mt-1">Overview of your proxy aggregation pipeline</p>
+    <p class="text-slate-400 mt-1">Manager panel — all testing is performed by worker nodes</p>
 </div>
 
 <!-- Stats Grid -->
@@ -22,7 +22,20 @@
         <div class="text-sm text-slate-400 mt-1">Subscriptions</div>
     </div>
 
-    <!-- Valid Proxies -->
+    <!-- Raw Proxies (fetched) -->
+    <div class="stat-card glass rounded-2xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                </svg>
+            </div>
+        </div>
+        <div class="text-3xl font-bold text-amber-400">{{ raw_proxy_count }}</div>
+        <div class="text-sm text-slate-400 mt-1">Raw Proxies</div>
+    </div>
+
+    <!-- Valid Proxies (from nodes) -->
     <div class="stat-card glass rounded-2xl p-6 glow-emerald">
         <div class="flex items-center justify-between mb-4">
             <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
@@ -31,21 +44,8 @@
                 </svg>
             </div>
         </div>
-        <div class="text-3xl font-bold text-emerald-400">{{ proxy_count }}</div>
+        <div class="text-3xl font-bold text-emerald-400">{{ valid_proxy_count }}</div>
         <div class="text-sm text-slate-400 mt-1">Valid Proxies</div>
-    </div>
-
-    <!-- Ping Threshold -->
-    <div class="stat-card glass rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-white">{{ settings.ping_threshold_ms }}<span class="text-lg text-slate-400 font-normal">ms</span></div>
-        <div class="text-sm text-slate-400 mt-1">Ping Threshold</div>
     </div>
 
     <!-- Test URLs -->
@@ -66,13 +66,12 @@
         <div class="flex items-center justify-between mb-4">
             <div class="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
                 <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2v6m0 0l-3-3m3 3l3-3"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
                 </svg>
             </div>
         </div>
         <div class="text-3xl font-bold text-white">{{ node_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">Active Nodes</div>
+        <div class="text-sm text-slate-400 mt-1">Worker Nodes</div>
     </div>
 </div>
 
@@ -87,7 +86,7 @@
             </div>
             <div>
                 <h2 class="text-lg font-semibold text-white flex items-center gap-2">
-                    Scheduler
+                    Auto-Fetch Scheduler
                     <span id="scheduler-badge" class="text-xs font-medium px-2 py-0.5 rounded-full
                         {% if settings.schedule_interval_minutes > 0 %}
                             bg-cyan-500/15 text-cyan-400 border border-cyan-500/20
@@ -103,9 +102,9 @@
                 </h2>
                 <p id="scheduler-next" class="text-sm text-slate-400 mt-0.5">
                     {% if settings.schedule_interval_minutes > 0 %}
-                        Waiting for next run…
+                        Waiting for next fetch…
                     {% else %}
-                        Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-run tests.
+                        Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.
                     {% endif %}
                 </p>
             </div>
@@ -113,16 +112,16 @@
     </div>
 </div>
 
-<!-- Test Control -->
+<!-- Fetch Control -->
 <div class="glass rounded-2xl p-6 mb-8 glow-accent">
     <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
             <h2 class="text-xl font-semibold text-white flex items-center gap-3">
-                Proxy Test Engine
-                {% if test_status.running %}
+                Subscription Fetcher
+                {% if fetch_status.running %}
                 <span class="flex items-center gap-2 text-sm font-normal text-amber-400">
                     <span class="w-2 h-2 rounded-full bg-amber-400 pulse-dot"></span>
-                    Running
+                    Fetching…
                 </span>
                 {% else %}
                 <span class="flex items-center gap-2 text-sm font-normal text-slate-500">
@@ -131,40 +130,35 @@
                 </span>
                 {% endif %}
             </h2>
-            <p class="text-sm text-slate-400 mt-1">Fetch sub → TCP ping → Test URLs → Speed test → Rank by score</p>
+            <p class="text-sm text-slate-400 mt-1">Fetch all subscriptions → deduplicate → store raw proxies → workers test them</p>
         </div>
-        <form method="POST" action="/run-test">
-            <button type="submit" id="btn-run-test"
-                class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2 {% if test_status.running %}opacity-50 cursor-not-allowed{% endif %}"
-                {% if test_status.running %}disabled{% endif %}>
+        <form method="POST" action="/fetch-subs">
+            <button type="submit" id="btn-fetch"
+                class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2 {% if fetch_status.running %}opacity-50 cursor-not-allowed{% endif %}"
+                {% if fetch_status.running %}disabled{% endif %}>
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
-                Run Full Test
+                Fetch Subscriptions
             </button>
         </form>
     </div>
 
-    <!-- Progress bar -->
-    <div id="progress-section" class="mt-6 {% if not test_status.running %}hidden{% endif %}">
+    <!-- Progress -->
+    <div id="progress-section" class="mt-6 {% if not fetch_status.running %}hidden{% endif %}">
         <div class="flex items-center justify-between text-sm mb-2">
-            <span class="text-slate-400">Phase: <span id="test-phase" class="text-white font-medium">{{ test_status.current_phase }}</span></span>
-            <span class="text-slate-400"><span id="test-checked" class="text-white">{{ test_status.checked }}</span> / <span id="test-total" class="text-white">{{ test_status.total }}</span> checked</span>
+            <span class="text-slate-400">Phase: <span id="fetch-phase" class="text-white font-medium">{{ fetch_status.current_phase }}</span></span>
+            <span class="text-slate-400">Proxies found: <span id="fetch-proxies" class="text-emerald-400 font-semibold">{{ fetch_status.fetched_proxies }}</span></span>
         </div>
         <div class="w-full h-2 bg-slate-700/50 rounded-full overflow-hidden">
             <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
-                style="width: {% if test_status.total > 0 %}{{ (test_status.checked / test_status.total * 100)|int }}{% else %}0{% endif %}%"></div>
-        </div>
-        <div class="flex items-center gap-6 mt-3 text-sm">
-            <span class="text-emerald-400">✓ <span id="test-passed">{{ test_status.passed }}</span> passed</span>
-            <span class="text-rose-400">✗ <span id="test-failed">{{ test_status.failed }}</span> failed</span>
+                style="width: {% if fetch_status.running %}50{% else %}0{% endif %}%"></div>
         </div>
     </div>
 </div>
 
 <!-- Webhook Info -->
-<div class="glass rounded-2xl p-6">
+<div class="glass rounded-2xl p-6 mb-8">
     <div class="flex items-center justify-between mb-2">
         <h2 class="text-lg font-semibold text-white">Webhook Distribution</h2>
         {% if settings.webhook_max_proxies > 0 %}
@@ -177,7 +171,7 @@
         </span>
         {% endif %}
     </div>
-    <p class="text-sm text-slate-400 mb-4">Share this URL with your clients to distribute working Proxy configs. No authentication required.</p>
+    <p class="text-sm text-slate-400 mb-4">Aggregated best proxies from all worker nodes. Share this URL with your VPN clients.</p>
     <div class="flex items-center gap-3">
         <code id="webhook-url" class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/20 text-indigo-400 text-sm font-mono truncate">
             {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}
@@ -206,7 +200,7 @@
         </span>
         {% endif %}
     </div>
-    <p class="text-sm text-slate-400 mb-4">Combines local passed proxies with the results from <strong>{{ node_count }}</strong> remote nodes. The list dynamically ranks proxies so that identical configurations that succeeded on the highest number of nodes appear at the very top.</p>
+    <p class="text-sm text-slate-400 mb-4">Ranks proxies by the number of worker nodes that verified them. Proxies confirmed by more nodes appear at the top.</p>
     <div class="flex items-center gap-3">
         <code id="global-url" class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
             {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
@@ -218,7 +212,7 @@
     </div>
 </div>
 
-<!-- AJAX polling for test progress + scheduler status -->
+<!-- AJAX polling for fetch progress + scheduler status -->
 <script>
 (function() {
     let polling = null;
@@ -231,43 +225,42 @@
             const diffMs = d - now;
             if (diffMs <= 0) return 'Starting soon…';
             const mins = Math.ceil(diffMs / 60000);
-            if (mins < 60) return 'Next run in ' + mins + ' min';
+            if (mins < 60) return 'Next fetch in ' + mins + ' min';
             const hrs = Math.floor(mins / 60);
             const remMins = mins % 60;
-            return 'Next run in ' + hrs + 'h ' + remMins + 'm';
+            return 'Next fetch in ' + hrs + 'h ' + remMins + 'm';
         } catch(e) { return ''; }
     }
 
     function updateStatus() {
-        fetch('/api/test-status')
+        fetch('/api/fetch-status')
             .then(r => r.json())
             .then(data => {
                 const section = document.getElementById('progress-section');
-                const phase = document.getElementById('test-phase');
-                const checked = document.getElementById('test-checked');
-                const total = document.getElementById('test-total');
-                const passed = document.getElementById('test-passed');
-                const failed = document.getElementById('test-failed');
+                const phase = document.getElementById('fetch-phase');
+                const proxies = document.getElementById('fetch-proxies');
                 const bar = document.getElementById('progress-bar');
-                const btn = document.getElementById('btn-run-test');
+                const btn = document.getElementById('btn-fetch');
 
                 if (data.running) {
                     section.classList.remove('hidden');
                     btn.disabled = true;
                     btn.classList.add('opacity-50', 'cursor-not-allowed');
+                    if (data.current_phase === 'fetching') {
+                        bar.style.width = '50%';
+                    } else if (data.current_phase === 'saving') {
+                        bar.style.width = '80%';
+                    }
                 } else {
                     btn.disabled = false;
                     btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    if (data.current_phase === 'done') {
+                        bar.style.width = '100%';
+                    }
                 }
 
                 phase.textContent = data.current_phase;
-                checked.textContent = data.checked;
-                total.textContent = data.total;
-                passed.textContent = data.passed;
-                failed.textContent = data.failed;
-
-                const pct = data.total > 0 ? Math.round(data.checked / data.total * 100) : 0;
-                bar.style.width = pct + '%';
+                proxies.textContent = data.fetched_proxies;
 
                 // Update scheduler info
                 if (data.scheduler) {
@@ -280,28 +273,21 @@
                     } else {
                         sBadge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-400 border border-slate-500/20';
                         sBadge.textContent = 'Disabled';
-                        sNext.innerHTML = 'Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-run tests.';
+                        sNext.innerHTML = 'Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.';
                     }
-                }
-
-                if (!data.running && polling) {
-                    // Keep polling for scheduler updates even when test is idle
                 }
             })
             .catch(() => {});
     }
 
-    // Always poll to keep scheduler status up-to-date
     polling = setInterval(updateStatus, 5000);
 
-    // Poll faster when test is running
-    {% if test_status.running %}
+    {% if fetch_status.running %}
     if (polling) clearInterval(polling);
     polling = setInterval(updateStatus, 1500);
     {% endif %}
 
-    // Speed up polling after form submit
-    const form = document.querySelector('form[action="/run-test"]');
+    const form = document.querySelector('form[action="/fetch-subs"]');
     if (form) {
         form.addEventListener('submit', () => {
             setTimeout(() => {
