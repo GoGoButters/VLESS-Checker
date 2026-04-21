@@ -64,7 +64,10 @@ def t(request: Request, key: str, **kwargs):
     lang = request.cookies.get("lang", "en")
     if lang not in translations:
         lang = "en"
-    text = translations[lang].get(key, key)
+    
+    default_text = kwargs.pop("default", key)
+    text = translations[lang].get(key, default_text)
+    
     if kwargs:
         text = text.format(**kwargs)
     return text
