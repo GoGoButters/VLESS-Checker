@@ -25,23 +25,25 @@ SINGBOX_PATH = os.environ.get("SINGBOX_PATH", "/usr/local/bin/sing-box")
 # ---------------------------------------------------------------------------
 # Speed test configuration
 # ---------------------------------------------------------------------------
-# Cloudflare CDN — fast, globally distributed, allows custom payload sizes
-DL_URL_TEMPLATE = "https://speed.cloudflare.com/__down?bytes={size}"
-UL_URL = "https://speed.cloudflare.com/__up"
+# Primary and fallback download URLs (10 MB files, accessible from Russia)
+DL_TEST_URLS = [
+    "https://speed.hetzner.de/10MB.bin",
+    "https://proof.ovh.net/files/10Mb.dat",
+    "http://speedtest.tele2.net/10MB.zip",
+    "https://ash-speed.hetzner.com/10MB.bin",
+]
 
-# Download: 10 MB per stream × 4 streams = up to 40 MB total
-DL_CHUNK_SIZE = 10 * 1024 * 1024       # 10 MB per stream
+# Upload endpoints (POST, accept binary body)
+UL_TEST_URLS = [
+    "https://httpbin.org/post",
+    "http://speedtest.tele2.net/upload.php",
+]
+
 DL_PARALLEL_STREAMS = 4                 # parallel download connections
 DL_MAX_DURATION_S = 12                  # stop after N seconds regardless
 
 # Upload: 2 MB payload
 UL_PAYLOAD_SIZE = 2 * 1024 * 1024       # 2 MB
-
-# Fallback URLs in case Cloudflare is unreachable
-DL_FALLBACK_URLS = [
-    "https://speed.hetzner.de/10MB.bin",
-    "https://proof.ovh.net/files/10Mb.dat",
-]
 
 
 def _get_free_port() -> int:
@@ -92,50 +94,32 @@ async def _measure_download(proxy_addr: str, timeout_s: int) -> int:
     """Measure download speed using multiple parallel streams.
     Returns download speed in KB/s, or 0 on failure.
     """
-    url = DL_URL_TEMPLATE.format(size=DL_CHUNK_SIZE)
     counter = {"bytes": 0}
     stop_event = asyncio.Event()
 
     async with httpx.AsyncClient(
         proxy=proxy_addr,
         timeout=httpx.Timeout(float(timeout_s)),
-        verify=True,
+        verify=False,
         follow_redirects=True,
         limits=httpx.Limits(
             max_connections=DL_PARALLEL_STREAMS + 2,
             max_keepalive_connections=DL_PARALLEL_STREAMS + 2,
         ),
     ) as client:
-        # Quick connectivity check with a tiny request
-        try:
-            probe = await client.get(
-                DL_URL_TEMPLATE.format(size=1024),
-                timeout=httpx.Timeout(8.0),
-            )
-            if probe.status_code != 200:
-                # Try fallback URLs
-                for fb_url in DL_FALLBACK_URLS:
-                    try:
-                        probe = await client.get(fb_url, timeout=httpx.Timeout(8.0))
-                        if probe.status_code == 200:
-                            url = fb_url
-                            break
-                    except Exception:
-                        continue
-                else:
-                    return 0
-        except Exception:
-            # Cloudflare unreachable, try fallbacks
-            for fb_url in DL_FALLBACK_URLS:
-                try:
-                    probe = await client.get(fb_url, timeout=httpx.Timeout(8.0))
-                    if probe.status_code == 200:
-                        url = fb_url
-                        break
-                except Exception:
-                    continue
-            else:
-                return 0
+        # Find a reachable download URL via quick probe
+        url = None
+        for test_url in DL_TEST_URLS:
+            try:
+                probe = await client.head(test_url, timeout=httpx.Timeout(8.0))
+                if probe.status_code in (200, 301, 302):
+                    url = test_url
+                    break
+            except Exception:
+                continue
+
+        if not url:
+            return 0
 
         # Launch parallel download streams
         start = time.monotonic()
@@ -168,50 +152,32 @@ async def _measure_download(proxy_addr: str, timeout_s: int) -> int:
 # Upload measurement
 # ---------------------------------------------------------------------------
 async def _measure_upload(proxy_addr: str, timeout_s: int) -> int:
-    """Measure upload speed by POSTing data to Cloudflare.
+    """Measure upload speed by POSTing data to a speed test endpoint.
     Returns upload speed in KB/s, or 0 on failure.
     """
     payload = os.urandom(UL_PAYLOAD_SIZE)
 
-    try:
-        async with httpx.AsyncClient(
-            proxy=proxy_addr,
-            timeout=httpx.Timeout(float(timeout_s)),
-            verify=True,
-            follow_redirects=True,
-        ) as client:
-            start = time.monotonic()
-            resp = await client.post(
-                UL_URL,
-                content=payload,
-                headers={"Content-Type": "application/octet-stream"},
-            )
-            elapsed = time.monotonic() - start
+    async with httpx.AsyncClient(
+        proxy=proxy_addr,
+        timeout=httpx.Timeout(float(timeout_s)),
+        verify=False,
+        follow_redirects=True,
+    ) as client:
+        for ul_url in UL_TEST_URLS:
+            try:
+                start = time.monotonic()
+                resp = await client.post(
+                    ul_url,
+                    content=payload,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                elapsed = time.monotonic() - start
 
-            if resp.status_code == 200 and elapsed > 0:
-                return int((UL_PAYLOAD_SIZE / 1024) / elapsed)
-    except Exception as e:
-        logger.debug(f"Upload speed test failed: {e}")
-
-    # Fallback: try httpbin
-    try:
-        async with httpx.AsyncClient(
-            proxy=proxy_addr,
-            timeout=httpx.Timeout(float(timeout_s)),
-            verify=True,
-            follow_redirects=True,
-        ) as client:
-            start = time.monotonic()
-            resp = await client.post(
-                "https://httpbin.org/post",
-                content=payload,
-                headers={"Content-Type": "application/octet-stream"},
-            )
-            elapsed = time.monotonic() - start
-            if resp.status_code == 200 and elapsed > 0:
-                return int((UL_PAYLOAD_SIZE / 1024) / elapsed)
-    except Exception:
-        pass
+                if resp.status_code == 200 and elapsed > 0:
+                    return int((UL_PAYLOAD_SIZE / 1024) / elapsed)
+            except Exception as e:
+                logger.debug(f"Upload to {ul_url} failed: {e}")
+                continue
 
     return 0
 
