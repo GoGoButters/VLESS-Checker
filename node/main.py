@@ -297,4 +297,9 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Node shut down by user.")
+        print("NODE SHUTDOWN: Interrupted by user.", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"CRITICAL ERROR during startup: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
