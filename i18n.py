@@ -211,7 +211,15 @@ translations = {
         "test_urls_col_status": "Status",
         "test_urls_col_min_body": "Min Body",
         "test_urls_delete_confirm": "Remove this test URL?",
-        "test_urls_none": "No test URLs configured. Add URLs above to start validating proxies."
+        "test_urls_none": "No test URLs configured. Add URLs above to start validating proxies.",
+        "settings_min_dl": "Min Download Speed (KB/s)",
+        "settings_min_dl_desc": "Only include proxies with download speed ≥ this value in webhook output. 0 = no filter.",
+        "settings_min_ul": "Min Upload Speed (KB/s)",
+        "settings_min_ul_desc": "Only include proxies with upload speed ≥ this value in webhook output. 0 = no filter.",
+        "settings_rename_prefix": "Config Rename Prefix",
+        "settings_rename_prefix_desc": "If set, configs in webhook will be renamed to PREFIX - 1, PREFIX - 2, etc. Leave empty for original names.",
+        "settings_rename_placeholder": "e.g. MyVPN — leave empty for original names",
+        "dash_copied": "Copied!"
     },
     "ru": {
         "nav_dashboard": "Панель управления",
@@ -425,6 +433,14 @@ translations = {
         "test_urls_col_status": "Статус",
         "test_urls_col_min_body": "Мин Тело",
         "test_urls_delete_confirm": "Удалить этот тестовый URL?",
-        "test_urls_none": "Тестовые URL не настроены. Добавьте URL выше, чтобы начать проверку прокси."
+        "test_urls_none": "Тестовые URL не настроены. Добавьте URL выше, чтобы начать проверку прокси.",
+        "settings_min_dl": "Мин. скорость загрузки (КБ/с)",
+        "settings_min_dl_desc": "Включать в вебхук только прокси со скоростью скачивания ≥ этого значения. 0 = без фильтра.",
+        "settings_min_ul": "Мин. скорость отдачи (КБ/с)",
+        "settings_min_ul_desc": "Включать в вебхук только прокси со скоростью отдачи ≥ этого значения. 0 = без фильтра.",
+        "settings_rename_prefix": "Префикс переименования конфигов",
+        "settings_rename_prefix_desc": "Если задан, конфиги в вебхуке будут переименованы в ПРЕФИКС - 1, ПРЕФИКС - 2 и т.д. Оставьте пустым для оригинальных имён.",
+        "settings_rename_placeholder": "напр. МойVPN — оставьте пустым для оригинальных имён",
+        "dash_copied": "Скопировано!"
     }
 }

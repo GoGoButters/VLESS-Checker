@@ -169,7 +169,7 @@
             <code id="webhook-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-indigo-400 text-sm font-mono truncate">
                 {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}
             </code>
-            <button onclick="navigator.clipboard.writeText(document.getElementById('webhook-url').textContent.trim())"
+            <button id="btn-copy-main" onclick="copyToClipboard('webhook-url', this)"
                 class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-slate-300 hover:text-white hover:border-indigo-500/30 transition-all text-xs">
                 {{ t(request, 'dash_copy', default='Copy') }}
             </button>
@@ -181,7 +181,7 @@
             <code id="global-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
                 {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
             </code>
-            <button onclick="navigator.clipboard.writeText(document.getElementById('global-url').textContent.trim())"
+            <button id="btn-copy-global" onclick="copyToClipboard('global-url', this)"
                 class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-slate-300 hover:text-white hover:border-emerald-500/30 transition-all text-xs">
                 {{ t(request, 'dash_copy', default='Copy') }}
             </button>
@@ -189,6 +189,48 @@
     </div>
 
     <p class="text-xs text-slate-500 mt-4">{{ t(request, 'dash_hook_desc', default='Main — best proxies by speed. Global — ranked by number of confirming nodes.') }}</p>
+
+    <script>
+    function copyToClipboard(elementId, btn) {
+        var text = document.getElementById(elementId).textContent.trim();
+        var origText = btn.textContent;
+
+        function onSuccess() {
+            btn.textContent = '✓';
+            btn.classList.add('text-emerald-400');
+            setTimeout(function() {
+                btn.textContent = origText;
+                btn.classList.remove('text-emerald-400');
+            }, 1500);
+        }
+
+        // Try modern clipboard API first
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(onSuccess).catch(function() {
+                fallbackCopy(text, onSuccess);
+            });
+        } else {
+            fallbackCopy(text, onSuccess);
+        }
+    }
+
+    function fallbackCopy(text, onSuccess) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            document.execCommand('copy');
+            onSuccess();
+        } catch(e) { /* silent */ }
+        document.body.removeChild(ta);
+    }
+    </script>
 </div>
 
 <!-- AJAX polling for fetch progress + scheduler status -->

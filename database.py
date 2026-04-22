@@ -80,6 +80,11 @@ class Settings(SQLModel, table=True):
     node_api_token: str = Field(default="")
     node_check_top_n: int = Field(default=50)
 
+    # Webhook filtering
+    webhook_min_dl_kbps: int = Field(default=0)   # min download speed (KB/s), 0 = no filter
+    webhook_min_ul_kbps: int = Field(default=0)   # min upload speed (KB/s), 0 = no filter
+    webhook_rename_prefix: str = Field(default="")  # optional rename prefix for configs
+
     # Global Consensus settings
     global_sub_min_nodes: int = Field(default=1)
     global_sub_top_n: int = Field(default=50)
@@ -142,6 +147,9 @@ def _migrate_db():
             ("node_check_top_n", "INTEGER DEFAULT 50"),
             ("global_sub_min_nodes", "INTEGER DEFAULT 1"),
             ("global_sub_top_n", "INTEGER DEFAULT 50"),
+            ("webhook_min_dl_kbps", "INTEGER DEFAULT 0"),
+            ("webhook_min_ul_kbps", "INTEGER DEFAULT 0"),
+            ("webhook_rename_prefix", "TEXT DEFAULT ''"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:

@@ -40,7 +40,7 @@ from auth import (
 from subs_manager import fetch_and_parse_subscriptions
 from scheduler import start_scheduler, scheduler_status
 from log_buffer import log_buffer, setup_log_buffer
-# from proxy_parsers import replace_proxy_remark
+from proxy_parsers import replace_proxy_remark
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -396,6 +396,9 @@ async def settings_save(
     speed_test_top_n: int = Form(0),
     node_check_top_n: int = Form(50),
     global_sub_top_n: int = Form(50),
+    webhook_min_dl_kbps: int = Form(0),
+    webhook_min_ul_kbps: int = Form(0),
+    webhook_rename_prefix: str = Form(""),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -413,6 +416,9 @@ async def settings_save(
             settings.speed_test_top_n = max(0, speed_test_top_n)
             settings.node_check_top_n = max(1, node_check_top_n)
             settings.global_sub_top_n = max(0, global_sub_top_n)
+            settings.webhook_min_dl_kbps = max(0, webhook_min_dl_kbps)
+            settings.webhook_min_ul_kbps = max(0, webhook_min_ul_kbps)
+            settings.webhook_rename_prefix = webhook_rename_prefix.strip()
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
@@ -805,6 +811,39 @@ async def api_fetch_status():
 # ---------------------------------------------------------------------------
 # WEBHOOK — Public proxy distribution (from node results)
 # ---------------------------------------------------------------------------
+def _apply_webhook_filters(proxy_urls: list[str], speeds: dict, settings) -> list[str]:
+    """Filter proxies by min speed thresholds and optionally rename them.
+    
+    Args:
+        proxy_urls: list of raw_url strings (already sorted)
+        speeds: dict mapping raw_url -> {"dl": int, "ul": int} (best values)
+        settings: Settings object with webhook_min_dl_kbps, webhook_min_ul_kbps, webhook_rename_prefix
+    Returns:
+        list of final proxy URL strings
+    """
+    min_dl = settings.webhook_min_dl_kbps or 0
+    min_ul = settings.webhook_min_ul_kbps or 0
+    prefix = (settings.webhook_rename_prefix or "").strip()
+
+    filtered = []
+    for url in proxy_urls:
+        sp = speeds.get(url, {"dl": 0, "ul": 0})
+        if min_dl > 0 and sp["dl"] < min_dl:
+            continue
+        if min_ul > 0 and sp["ul"] < min_ul:
+            continue
+        filtered.append(url)
+
+    # Rename if prefix is set
+    if prefix:
+        renamed = []
+        for i, url in enumerate(filtered, start=1):
+            renamed.append(replace_proxy_remark(url, f"{prefix} - {i}"))
+        return renamed
+
+    return filtered
+
+
 @app.get("/{secret_path:path}")
 async def webhook_output(secret_path: str):
     with Session(engine) as session:
@@ -834,16 +873,16 @@ async def webhook_output(secret_path: str):
             if settings.webhook_max_proxies > 0:
                 proxies = proxies[:settings.webhook_max_proxies]
 
-            lines = []
-            for i, p in enumerate(proxies, start=1):
-                lines.append(p.raw_url)
+            urls = [p.raw_url for p in proxies]
+            speeds = {p.raw_url: {"dl": p.download_speed_kbps, "ul": p.upload_speed_kbps} for p in proxies}
+            lines = _apply_webhook_filters(urls, speeds, settings)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
         # Global Consensus Webhook: {webhook_secret_path}/global
         global_prefix = f"{settings.webhook_secret_path}/global"
         if secret_path == global_prefix:
             # Aggregate all node results
-            stats = defaultdict(lambda: {"passes": 0, "speed_scores": []})
+            stats = defaultdict(lambda: {"passes": 0, "speed_scores": [], "dl_max": 0, "ul_max": 0})
 
             node_results = session.exec(select(NodeProxyResult)).all()
             for np_r in node_results:
@@ -851,6 +890,8 @@ async def webhook_output(secret_path: str):
                     link = np_r.raw_url
                     stats[link]["passes"] += 1
                     stats[link]["speed_scores"].append(np_r.speed_score)
+                    stats[link]["dl_max"] = max(stats[link]["dl_max"], np_r.download_speed_kbps)
+                    stats[link]["ul_max"] = max(stats[link]["ul_max"], np_r.upload_speed_kbps)
 
             consensus_list = []
             for link, data in stats.items():
@@ -858,7 +899,9 @@ async def webhook_output(secret_path: str):
                 consensus_list.append({
                     "link": link,
                     "passes": data["passes"],
-                    "avg_speed": avg_speed
+                    "avg_speed": avg_speed,
+                    "dl": data["dl_max"],
+                    "ul": data["ul_max"],
                 })
 
             consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)
@@ -867,9 +910,9 @@ async def webhook_output(secret_path: str):
             if top_n > 0:
                 consensus_list = consensus_list[:top_n]
 
-            lines = []
-            for i, p in enumerate(consensus_list, start=1):
-                lines.append(p["link"])
+            urls = [p["link"] for p in consensus_list]
+            speeds = {p["link"]: {"dl": p["dl"], "ul": p["ul"]} for p in consensus_list}
+            lines = _apply_webhook_filters(urls, speeds, settings)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
         # Main webhook — best proxies across all nodes
@@ -895,9 +938,9 @@ async def webhook_output(secret_path: str):
         if settings.webhook_max_proxies > 0:
             proxies = proxies[:settings.webhook_max_proxies]
 
-    lines = []
-    for i, p in enumerate(proxies, start=1):
-        lines.append(p.raw_url)
+    urls = [p.raw_url for p in proxies]
+    speeds = {p.raw_url: {"dl": p.download_speed_kbps, "ul": p.upload_speed_kbps} for p in proxies}
+    lines = _apply_webhook_filters(urls, speeds, settings)
 
     text = "\n".join(lines)
     return PlainTextResponse(text, media_type="text/plain; charset=utf-8")

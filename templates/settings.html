@@ -83,6 +83,30 @@
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
                 <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_max_webhook_desc', default='Limit webhook output to the top N proxies. Set to 0 for unlimited.') }}</p>
             </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="webhook_min_dl_kbps" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_min_dl', default='Min Download Speed (KB/s)') }}</label>
+                    <input type="number" name="webhook_min_dl_kbps" id="webhook_min_dl_kbps" min="0" max="100000"
+                        value="{{ settings.webhook_min_dl_kbps }}"
+                        class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
+                    <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_min_dl_desc', default='Only include proxies with download speed ≥ this value. 0 = no filter.') }}</p>
+                </div>
+                <div>
+                    <label for="webhook_min_ul_kbps" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_min_ul', default='Min Upload Speed (KB/s)') }}</label>
+                    <input type="number" name="webhook_min_ul_kbps" id="webhook_min_ul_kbps" min="0" max="100000"
+                        value="{{ settings.webhook_min_ul_kbps }}"
+                        class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
+                    <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_min_ul_desc', default='Only include proxies with upload speed ≥ this value. 0 = no filter.') }}</p>
+                </div>
+            </div>
+            <div>
+                <label for="webhook_rename_prefix" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_rename_prefix', default='Config Rename Prefix') }}</label>
+                <input type="text" name="webhook_rename_prefix" id="webhook_rename_prefix"
+                    value="{{ settings.webhook_rename_prefix }}"
+                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white placeholder-slate-500 outline-none text-sm"
+                    placeholder="{{ t(request, 'settings_rename_placeholder', default='e.g. MyVPN — leave empty for original names') }}">
+                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_rename_prefix_desc', default='If set, configs will be renamed to PREFIX - 1, PREFIX - 2, etc. Leave empty for original names.') }}</p>
+            </div>
         </div>
     </div>
 

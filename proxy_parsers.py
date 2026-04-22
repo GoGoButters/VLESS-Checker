@@ -260,3 +260,31 @@ def extract_host_port(url: str) -> tuple[str, int] | None:
     if parsed:
         return parsed.get('server', ''), parsed.get('server_port', 0)
     return None
+
+
+def replace_proxy_remark(url: str, new_remark: str) -> str:
+    """Replace the remark (fragment after #) in a proxy URI with a new name.
+    
+    For vmess:// (base64-encoded JSON), the 'ps' field inside is updated.
+    For all other protocols, the fragment (#...) is replaced.
+    """
+    from urllib.parse import quote
+    url = url.strip()
+    
+    if url.startswith("vmess://"):
+        # vmess is base64-encoded JSON; update 'ps' field
+        b64_data = url.replace("vmess://", "").split("#")[0]
+        try:
+            decoded = _decode_base64_padding(b64_data).decode('utf-8')
+            v = json.loads(decoded)
+            v["ps"] = new_remark
+            new_b64 = base64.b64encode(json.dumps(v, ensure_ascii=False).encode('utf-8')).decode('utf-8')
+            return f"vmess://{new_b64}"
+        except Exception:
+            # Fallback: just replace fragment
+            base = url.split("#")[0]
+            return f"{base}#{quote(new_remark)}"
+    else:
+        # vless://, trojan://, ss://, hy2:// — remark is in fragment
+        base = url.split("#")[0]
+        return f"{base}#{quote(new_remark)}"
