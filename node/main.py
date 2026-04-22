@@ -16,7 +16,7 @@ class RemoteLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.logs = []
-        self._buffer_lock = threading.Lock()
+        self.lock = threading.Lock()
 
     def emit(self, record):
         try:
@@ -26,7 +26,7 @@ class RemoteLogHandler(logging.Handler):
                 "level": record.levelname,
                 "message": msg,
             }
-            with self._buffer_lock:
+            with self.lock:
                 self.logs.append(entry)
                 if len(self.logs) > 1000:
                     self.logs = self.logs[-1000:]
@@ -34,7 +34,7 @@ class RemoteLogHandler(logging.Handler):
             pass
 
     def pop_all(self):
-        with self._buffer_lock:
+        with self.lock:
             logs = self.logs[:]
             self.logs.clear()
             return logs
