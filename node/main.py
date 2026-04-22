@@ -35,7 +35,7 @@ class RemoteLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self.logs = []
-        self.lock = threading.Lock()
+        self._buffer_lock = threading.Lock()
 
     def emit(self, record):
         try:
@@ -45,7 +45,7 @@ class RemoteLogHandler(logging.Handler):
                 "level": record.levelname,
                 "message": msg,
             }
-            with self.lock:
+            with self._buffer_lock:
                 self.logs.append(entry)
                 if len(self.logs) > 1000:
                     self.logs = self.logs[-1000:]
@@ -54,7 +54,7 @@ class RemoteLogHandler(logging.Handler):
 
     def pop_all(self):
         try:
-            with self.lock:
+            with self._buffer_lock:
                 logs = self.logs[:]
                 self.logs.clear()
                 return logs
@@ -246,7 +246,7 @@ class NodeApp:
                 continue
             if not self.node_id:
                 # Put them back if not registered
-                with remote_log_handler.lock:
+                with remote_log_handler._buffer_lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
                         remote_log_handler.logs = remote_log_handler.logs[-1000:]
@@ -258,13 +258,13 @@ class NodeApp:
                 )
                 if resp.status_code != 200:
                     print(f"DEBUG: Master rejected logs (HTTP {resp.status_code})", flush=True)
-                    with remote_log_handler.lock:
+                    with remote_log_handler._buffer_lock:
                         remote_log_handler.logs = logs + remote_log_handler.logs
                         if len(remote_log_handler.logs) > 1000:
                             remote_log_handler.logs = remote_log_handler.logs[-1000:]
             except Exception as e:
                 print(f"DEBUG: Failed to send logs to master: {e}", flush=True)
-                with remote_log_handler.lock:
+                with remote_log_handler._buffer_lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
                         remote_log_handler.logs = remote_log_handler.logs[-1000:]
