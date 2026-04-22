@@ -29,7 +29,6 @@ for handler in logging.root.handlers:
         handler.flush = lambda: sys.stdout.flush()
 
 logger = logging.getLogger("vpn_checker_node")
-print("NODE STARTUP: Logging initialized.", flush=True)
 
 class RemoteLogHandler(logging.Handler):
     def __init__(self):
@@ -75,7 +74,7 @@ class NodeApp:
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
         )
-        print(f"NODE STARTUP: NodeApp initialized. Master URL: {self.master_url}", flush=True)
+        logger.info(f"NodeApp initialized. Master URL: {self.master_url}")
 
     async def register(self) -> bool:
         try:
@@ -83,21 +82,17 @@ class NodeApp:
                 "name": config.node_name,
                 "region": config.node_region
             }
-            print(f"NODE STARTUP: Attempting to register with {self.master_url}/api/node/register...", flush=True)
             logger.info(f"Registering with master at {self.master_url}...")
             resp = await self.http_client.post(f"{self.master_url}/api/node/register", json=payload)
             if resp.status_code == 200:
                 data = resp.json()
                 self.node_id = data.get("node_id")
-                print(f"NODE STARTUP: Registered successfully! Node ID: {self.node_id}", flush=True)
                 logger.info(f"Registered successfully! Node ID: {self.node_id}")
                 return True
             else:
-                print(f"NODE STARTUP: Registration failed (HTTP {resp.status_code})", flush=True)
                 logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
-            print(f"NODE STARTUP: Exception during registration: {e}", flush=True)
             logger.error(f"Error registering node: {e}")
             return False
 
@@ -238,7 +233,6 @@ class NodeApp:
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
 
     async def log_sender_loop(self):
-        print("DEBUG: log_sender_loop() background task is running.", flush=True)
         while True:
             await asyncio.sleep(5)
             logs = remote_log_handler.pop_all()
@@ -257,13 +251,11 @@ class NodeApp:
                     json={"node_id": self.node_id, "logs": logs}
                 )
                 if resp.status_code != 200:
-                    print(f"DEBUG: Master rejected logs (HTTP {resp.status_code})", flush=True)
                     with remote_log_handler._buffer_lock:
                         remote_log_handler.logs = logs + remote_log_handler.logs
                         if len(remote_log_handler.logs) > 1000:
                             remote_log_handler.logs = remote_log_handler.logs[-1000:]
             except Exception as e:
-                print(f"DEBUG: Failed to send logs to master: {e}", flush=True)
                 with remote_log_handler._buffer_lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
@@ -272,21 +264,11 @@ class NodeApp:
 
 
 async def main():
-    print("NODE STARTUP: main() started.", flush=True)
-    print("DEBUG: About to create NodeApp instance...", flush=True)
-    try:
-        app = NodeApp()
-        print("DEBUG: NodeApp instance created successfully.", flush=True)
-    except Exception as e:
-        import traceback
-        print(f"CRITICAL ERROR during NodeApp init: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        return
-
+    logger.info("Initializing VPN Checker Worker Node...")
+    app = NodeApp()
+    
     # Start the log sender loop in the background
-    print("DEBUG: Starting log sender task...", flush=True)
     asyncio.create_task(app.log_sender_loop())
-    print("DEBUG: Log sender task started.", flush=True)
     
     while True:
         try:
@@ -307,9 +289,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("NODE SHUTDOWN: Interrupted by user.", flush=True)
+        logger.info("Node shut down by user.")
     except Exception as e:
-        import traceback
-        print(f"CRITICAL ERROR during startup: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
+        logger.critical(f"Critical error during startup: {e}", exc_info=True)
         sys.exit(1)
