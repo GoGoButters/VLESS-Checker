@@ -173,19 +173,24 @@ class NodeApp:
         # 4. Optional: Speed testing phase
         if speed_top_n > 0 and valid_proxies:
             from speed_tester import _measure_speed, _compute_speed_score
-            logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies...")
+            logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies (multi-stream)...")
 
             to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
-            for p in to_test:
-                result = await _measure_speed(p.raw_url, timeout_s=http_timeout + 5)
-                if result:
-                    dl, ul = result
-                    p.download_speed_kbps = dl
-                    p.upload_speed_kbps = ul
-                    p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
-                    logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f}")
-                else:
-                    p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+            speed_sem = asyncio.Semaphore(2)  # 2 concurrent speed tests (each uses 4 streams)
+
+            async def _speed_one(p):
+                async with speed_sem:
+                    result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
+                    if result:
+                        dl, ul = result
+                        p.download_speed_kbps = dl
+                        p.upload_speed_kbps = ul
+                        p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
+                        logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f}")
+                    else:
+                        p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+
+            await asyncio.gather(*[_speed_one(p) for p in to_test])
 
         # 5. Format results for reporting
         final_results = []
