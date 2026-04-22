@@ -143,10 +143,13 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
 
-        # 2. Get raw proxies from master
         run_id, raw_urls = await self.get_proxies()
         if not raw_urls:
             logger.info("No proxies available from master. Idling.")
+            return
+
+        if run_id == self.last_run_id:
+            logger.info(f"Proxies (run_id={run_id}) haven't changed since last test. Skipping cycle.")
             return
 
         logger.info(f"Starting tests with {len(raw_urls)} proxies (run_id={run_id})...")
