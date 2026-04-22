@@ -238,6 +238,7 @@ class NodeApp:
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
 
     async def log_sender_loop(self):
+        print("DEBUG: log_sender_loop() background task is running.", flush=True)
         while True:
             await asyncio.sleep(5)
             logs = remote_log_handler.pop_all()
@@ -272,11 +273,20 @@ class NodeApp:
 
 async def main():
     print("NODE STARTUP: main() started.", flush=True)
-    logger.info("Initializing VPN Checker Worker Node...")
-    app = NodeApp()
-    
+    print("DEBUG: About to create NodeApp instance...", flush=True)
+    try:
+        app = NodeApp()
+        print("DEBUG: NodeApp instance created successfully.", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"CRITICAL ERROR during NodeApp init: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        return
+
     # Start the log sender loop in the background
+    print("DEBUG: Starting log sender task...", flush=True)
     asyncio.create_task(app.log_sender_loop())
+    print("DEBUG: Log sender task started.", flush=True)
     
     while True:
         try:
