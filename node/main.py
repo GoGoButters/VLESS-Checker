@@ -75,6 +75,7 @@ class NodeApp:
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
         )
+        print(f"NODE STARTUP: NodeApp initialized. Master URL: {self.master_url}", flush=True)
 
     async def register(self) -> bool:
         try:
@@ -82,6 +83,7 @@ class NodeApp:
                 "name": config.node_name,
                 "region": config.node_region
             }
+            print(f"NODE STARTUP: Attempting to register with {self.master_url}/api/node/register...", flush=True)
             logger.info(f"Registering with master at {self.master_url}...")
             resp = await self.http_client.post(f"{self.master_url}/api/node/register", json=payload)
             if resp.status_code == 200:
