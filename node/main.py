@@ -3,14 +3,33 @@ import logging
 import os
 import sys
 import httpx
+import threading
+from datetime import datetime, timezone
 
 # Add parent dir to path to import proxy_parsers and tester logic
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import threading
-from datetime import datetime, timezone
+# Import config after path setup
+try:
+    from config import config
+except ImportError:
+    print("CRITICAL: Could not import config. Check if node/config.py exists.", file=sys.stderr, flush=True)
+    sys.exit(1)
 
-from config import config
+# Configure logging IMMEDIATELY to catch early issues
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+    force=True,
+    stream=sys.stdout
+)
+# Ensure stdout is flushed on every log
+for handler in logging.root.handlers:
+    if hasattr(handler, 'stream') and handler.stream == sys.stdout:
+        handler.flush = lambda: sys.stdout.flush()
+
+logger = logging.getLogger("vpn_checker_node")
+print("NODE STARTUP: Logging initialized.", flush=True)
 
 class RemoteLogHandler(logging.Handler):
     def __init__(self):
@@ -30,22 +49,21 @@ class RemoteLogHandler(logging.Handler):
                 self.logs.append(entry)
                 if len(self.logs) > 1000:
                     self.logs = self.logs[-1000:]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"ERROR in RemoteLogHandler.emit: {e}", file=sys.stderr, flush=True)
 
     def pop_all(self):
-        with self.lock:
-            logs = self.logs[:]
-            self.logs.clear()
-            return logs
+        try:
+            with self.lock:
+                logs = self.logs[:]
+                self.logs.clear()
+                return logs
+        except Exception as e:
+            print(f"ERROR in RemoteLogHandler.pop_all: {e}", file=sys.stderr, flush=True)
+            return []
 
 remote_log_handler = RemoteLogHandler()
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s', force=True, stream=sys.stdout)
-logger = logging.getLogger("vpn_checker_node")
 logger.addHandler(remote_log_handler)
-
-# Capture all logs from proxy_parsers, tester, and speed_tester
 logging.getLogger("vpn_checker").addHandler(remote_log_handler)
 
 class NodeApp:
@@ -69,12 +87,15 @@ class NodeApp:
             if resp.status_code == 200:
                 data = resp.json()
                 self.node_id = data.get("node_id")
+                print(f"NODE STARTUP: Registered successfully! Node ID: {self.node_id}", flush=True)
                 logger.info(f"Registered successfully! Node ID: {self.node_id}")
                 return True
             else:
+                print(f"NODE STARTUP: Registration failed (HTTP {resp.status_code})", flush=True)
                 logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
+            print(f"NODE STARTUP: Exception during registration: {e}", flush=True)
             logger.error(f"Error registering node: {e}")
             return False
 
@@ -233,11 +254,13 @@ class NodeApp:
                     json={"node_id": self.node_id, "logs": logs}
                 )
                 if resp.status_code != 200:
+                    print(f"DEBUG: Master rejected logs (HTTP {resp.status_code})", flush=True)
                     with remote_log_handler.lock:
                         remote_log_handler.logs = logs + remote_log_handler.logs
                         if len(remote_log_handler.logs) > 1000:
                             remote_log_handler.logs = remote_log_handler.logs[-1000:]
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG: Failed to send logs to master: {e}", flush=True)
                 with remote_log_handler.lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
@@ -246,6 +269,7 @@ class NodeApp:
 
 
 async def main():
+    print("NODE STARTUP: main() started.", flush=True)
     logger.info("Initializing VPN Checker Worker Node...")
     app = NodeApp()
     
