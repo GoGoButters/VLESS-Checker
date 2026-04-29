@@ -5,9 +5,10 @@ from urllib.parse import urlparse, parse_qs, unquote
 def _decode_base64_padding(data: str) -> bytes:
     """Pad base64 string to a multiple of 4 before decoding."""
     data = data.strip()
-    padding = 4 - len(data) % 4
-    if padding != 4:
-        data += "=" * padding
+    # Compute padding as the number of '=' needed to reach a length multiple of 4
+    pad_len = (-len(data)) % 4
+    if pad_len:
+        data += "=" * pad_len
     return base64.b64decode(data)
 
 def parse_proxy_url(url: str) -> dict | None:
