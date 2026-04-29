@@ -414,7 +414,7 @@ async def settings_save(
             settings.webhook_max_proxies = max(0, webhook_max_proxies)
             settings.http_timeout_s = max(1, http_timeout_s)
             settings.speed_test_top_n = max(0, speed_test_top_n)
-            settings.node_check_top_n = max(1, node_check_top_n)
+            settings.node_check_top_n = max(0, node_check_top_n)
             settings.global_sub_top_n = max(0, global_sub_top_n)
             settings.webhook_min_dl_kbps = max(0, webhook_min_dl_kbps)
             settings.webhook_min_ul_kbps = max(0, webhook_min_ul_kbps)
@@ -495,10 +495,14 @@ async def proxies_page(request: Request):
         nc = agg["node_count"]
         agg["avg_dl_kbps"] = agg["dl_sum"] // nc if nc else 0
         agg["avg_ul_kbps"] = agg["ul_sum"] // nc if nc else 0
+        # Apply multiplier: proxies on more nodes get higher effective score
+        # Multiplier: 1.0 for 1 node, 1.5 for 2 nodes, 2.0 for 3+ nodes
+        node_multiplier = min(nc * 0.5 + 0.5, 3.0) if nc > 0 else 1.0
+        agg["effective_score"] = agg["max_speed_score"] * node_multiplier
         proxy_list.append(agg)
-
-    # Sort: most nodes passed -> highest speed -> lowest ping
-    proxy_list.sort(key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"]))
+    
+    # Sort: most nodes -> highest effective score -> lowest ping
+    proxy_list.sort(key=lambda x: (-x["node_count"], -x["effective_score"], x["best_ping_ms"]))
 
     return templates.TemplateResponse(request, "proxies.html", {
         "user": user,
@@ -616,6 +620,7 @@ async def node_get_config(authorization: str = Header(None)):
         "http_timeout_s": settings.http_timeout_s if settings else 10,
         "concurrent_checks_limit": settings.concurrent_checks_limit if settings else 50,
         "speed_test_top_n": settings.speed_test_top_n if settings else 0,
+        "schedule_interval_minutes": settings.schedule_interval_minutes if settings else 0,
         "test_urls": [
             {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
             for t in test_urls
@@ -637,7 +642,7 @@ async def node_get_proxies(authorization: str = Header(None)):
             query = query.limit(limit)
         raw_proxies = session.exec(query).all()
 
-    raw_urls = [p.raw_url for p in raw_proxies]
+    raw_urls = sorted([p.raw_url for p in raw_proxies])
     run_id = hashlib.md5("".join(raw_urls).encode("utf-8")).hexdigest() if raw_urls else "empty"
 
     return {
@@ -896,15 +901,20 @@ async def webhook_output(secret_path: str):
             consensus_list = []
             for link, data in stats.items():
                 avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
+                passes = data["passes"]
+                # Apply multiplier: proxies on more nodes get higher effective score
+                node_multiplier = min(passes * 0.5 + 0.5, 3.0) if passes > 0 else 1.0
+                effective_score = avg_speed * node_multiplier
                 consensus_list.append({
                     "link": link,
-                    "passes": data["passes"],
+                    "passes": passes,
                     "avg_speed": avg_speed,
+                    "effective_score": effective_score,
                     "dl": data["dl_max"],
                     "ul": data["ul_max"],
                 })
-
-            consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)
+            
+            consensus_list.sort(key=lambda x: (x["passes"], x["effective_score"]), reverse=True)
 
             top_n = settings.global_sub_top_n
             if top_n > 0:

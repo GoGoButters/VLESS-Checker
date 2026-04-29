@@ -160,8 +160,10 @@ class NodeApp:
         http_timeout = test_config.get("http_timeout_s", 10)
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
+        schedule_interval = test_config.get("schedule_interval_minutes", 0)
 
         run_id, raw_urls = await self.get_proxies()
+        logger.info(f"Fetched proxies: run_id={run_id}, last_run_id={self.last_run_id}, count={len(raw_urls)}, schedule_interval={schedule_interval}min")
         if not raw_urls:
             logger.info("No proxies available from master. Idling.")
             return
@@ -272,18 +274,36 @@ async def main():
     
     while True:
         try:
-            logger.info("Waking up for check-in...")
+            logger.debug("Waking up for check-in...")
             # Always register/re-register to keep heartbeat alive
             await app.register()
                 
             if app.node_id:
+                # Get config to check schedule interval
+                test_config = await app.get_test_config()
+                schedule_interval = test_config.get("schedule_interval_minutes", 0) if test_config else 0
+                
                 await app.run_testing_cycle()
+                
+                # Sleep logic: use max of poll_interval_s and schedule_interval*60
+                sleep_time = config.poll_interval_s
+                if schedule_interval > 0:
+                    # Only extend sleep time if schedule interval is longer
+                    schedule_seconds = schedule_interval * 60
+                    if schedule_seconds > sleep_time:
+                        sleep_time = schedule_seconds
+                        logger.info(f"Scheduler interval is {schedule_interval}min, sleeping for {sleep_time}s")
+                
+                logger.debug(f"Sleeping for {sleep_time} seconds...")
+                await asyncio.sleep(sleep_time)
+            else:
+                logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
+                await asyncio.sleep(config.poll_interval_s)
                 
         except Exception as e:
             logger.error(f"Unhandled error in main loop: {e}")
-            
-        logger.info(f"Sleeping for {config.poll_interval_s} seconds...")
-        await asyncio.sleep(config.poll_interval_s)
+            logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
+            await asyncio.sleep(config.poll_interval_s)
 
 if __name__ == "__main__":
     try:
