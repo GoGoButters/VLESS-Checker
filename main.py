@@ -802,12 +802,12 @@ async def _background_fetch():
 
         # Get good proxies from previous tests (tests_passed > 0)
         with Session(engine) as session:
-            good_proxies = session.exec(
+            results = session.exec(
                 select(NodeProxyResult.raw_url)
                 .where(NodeProxyResult.tests_passed > 0)
                 .distinct()
             ).all()
-            good_proxies = [row[0] for row in good_proxies]
+            good_proxies = [str(row[0]) for row in results if row[0]]
             logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
 
         # Pass session to update last_config_count
@@ -830,7 +830,9 @@ async def _background_fetch():
 
             # Store raw proxies
             session.exec(delete(RawProxy))
-            for url in proxy_links:
+            # Filter out any non-string or single-char entries
+            valid_links = [url for url in proxy_links if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://'))]
+            for url in valid_links:
                 session.add(RawProxy(raw_url=url))
             session.commit()
 

@@ -97,10 +97,12 @@ async def _scheduler_loop():
                 
                 if proxy_links:
                     session.exec(delete(RawProxy))
-                    for url in proxy_links:
+                    # Filter out any non-string or single-char entries
+                    valid_links = [url for url in proxy_links if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://'))]
+                    for url in valid_links:
                         session.add(RawProxy(raw_url=url))
                     session.commit()
-                    logger.info(f"Scheduler: fetched {len(proxy_links)} proxies for workers")
+                    logger.info(f"Scheduler: fetched {len(valid_links)} proxies for workers")
                 else:
                     logger.warning("Scheduler: no proxy links found from subscriptions")
 
