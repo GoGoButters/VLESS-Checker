@@ -413,6 +413,7 @@ async def settings_save(
     webhook_min_dl_kbps: int = Form(0),
     webhook_min_ul_kbps: int = Form(0),
     webhook_rename_prefix: str = Form(""),
+    ban_duration_hours: int = Form(168),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -694,6 +695,7 @@ async def node_post_results(request: Request, authorization: str = Header(None))
         session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
 
         passed = 0
+        failed_urls = []
         for r in results:
             npr = NodeProxyResult(
                 node_id=node_id,
@@ -709,12 +711,30 @@ async def node_post_results(request: Request, authorization: str = Header(None))
             session.add(npr)
             if r.get("tests_passed", 0) > 0:
                 passed += 1
+            else:
+                failed_urls.append(r.get("raw_url", ""))
 
         node.proxies_checked = body.get("checked_count", len(results))
         node.proxies_passed = passed
         node.last_heartbeat = now
         node.is_online = True
         session.add(node)
+
+        # Ban failed proxies
+        if failed_urls:
+            ban_duration = 168  # default 7 days
+            settings = session.exec(select(Settings)).first()
+            if settings and settings.ban_duration_hours > 0:
+                ban_duration = settings.ban_duration_hours
+            ban_until = (datetime.now(timezone.utc) + timedelta(hours=ban_duration)).isoformat()
+            
+            for url in set(failed_urls):
+                rp = session.exec(select(RawProxy).where(RawProxy.raw_url == url)).first()
+                if rp:
+                    rp.banned_until = ban_until
+            
+            logger.info(f"Banned {len(set(failed_urls))} failed proxies for {ban_duration}h")
+
         session.commit()
 
     logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")

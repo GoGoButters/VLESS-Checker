@@ -42,6 +42,7 @@ class RawProxy(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     raw_url: str = Field(unique=True, index=True)
     fetched_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    banned_until: Optional[str] = Field(default=None, index=True)  # ISO timestamp or None
 
 
 class TestUrl(SQLModel, table=True):
@@ -90,6 +91,9 @@ class Settings(SQLModel, table=True):
     # Global Consensus settings
     global_sub_min_nodes: int = Field(default=1)
     global_sub_top_n: int = Field(default=50)
+
+    # Ban settings
+    ban_duration_hours: int = Field(default=168)  # 7 days = 168 hours, 0 = disabled
 
 
 class Node(SQLModel, table=True):
@@ -152,6 +156,7 @@ def _migrate_db():
             ("webhook_min_dl_kbps", "INTEGER DEFAULT 0"),
             ("webhook_min_ul_kbps", "INTEGER DEFAULT 0"),
             ("webhook_rename_prefix", "TEXT DEFAULT ''"),
+            ("ban_duration_hours", "INTEGER DEFAULT 168"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
@@ -164,6 +169,12 @@ def _migrate_db():
             conn.execute("ALTER TABLE subscriptions ADD COLUMN is_enabled INTEGER DEFAULT 1")
         if "last_config_count" not in sub_existing:
             conn.execute("ALTER TABLE subscriptions ADD COLUMN last_config_count INTEGER DEFAULT 0")
+        
+        # RawProxy migrations
+        cursor = conn.execute("PRAGMA table_info(raw_proxies)")
+        raw_existing = {row[1] for row in cursor.fetchall()}
+        if "banned_until" not in raw_existing:
+            conn.execute("ALTER TABLE raw_proxies ADD COLUMN banned_until TEXT DEFAULT NULL")
         
         conn.commit()
         conn.close()
