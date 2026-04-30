@@ -11,99 +11,19 @@
 
 <div class="glass rounded-2xl overflow-hidden">
     {% if proxies %}
-        {# Container for responsive display: Table on large screens, Grid/Cards on mobile #}
-        <div class="lg:overflow-x-auto py-4 px-6 sm:px-8 lg:px-12">
-            <table class="min-w-full divide-y divide-slate-700/30">
-                <thead>
-                    <tr>
-                        {# Changed the first column (Index) to be a simple identifier, not mandatory for all rows #}
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12 hidden sm:table-cell">#</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'proxies_col_config', default='Proxy Config') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[120px]">{{ t(request, 'proxies_col_nodes', default='Nodes') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_tests', default='Tests') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[80px]">{{ t(request, 'proxies_col_ping', default='Best Ping') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_dl', default='Avg DL') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_ul', default='Avg UL') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[80px]">{{ t(request, 'proxies_col_score', default='Score') }}</th>
-                        <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[120px]">{{ t(request, 'proxies_col_tested', default='Tested') }}</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-700/20">
-                    {% for proxy in proxies %}
-                    <tr class="table-row transition duration-150 hover:bg-slate-800/30 cursor-pointer">
-                        {# Index #}
-                        <td class="px-4 py-4 text-sm text-slate-500 hidden sm:table-cell">{{ loop.index }}</td>
-                        {# Proxy Config (The main unique identifier, needs to be flexible) #}
-                        <td class="px-4 py-4">
-                            <div class="flex items-center gap-3 flex-wrap">
-                                <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
-                                <span class="text-sm text-slate-200 truncate max-w-xl font-mono">{{ proxy.raw_url }}</span>
-                            </div>
-                        </td>
-                        {# Nodes #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[120px] flex items-center justify-content-center">
-                            <span class="px-3 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-xs font-bold">{{ proxy.node_count }}</span>
-                        </td>
-                        {# Tests #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[100px] flex items-center justify-content-center">
-                            <span class="px-3 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-bold">{{ proxy.tests_passed }}/{{ proxy.total_tests_total }}</span>
-                        </td>
-                        {# Ping #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[80px] flex items-center justify-content-center">
-                            {% if proxy.best_ping_ms < 200 %}
-                            <span class="text-sm font-bold text-emerald-300">{{ proxy.best_ping_ms }}ms</span>
-                            {% elif proxy.best_ping_ms < 500 %}
-                            <span class="text-sm font-semibold text-amber-300">{{ proxy.best_ping_ms }}ms</span>
-                            {% else %}
-                            <span class="text-sm font-normal text-rose-400">{{ proxy.best_ping_ms }}ms</span>
-                            {% endif %}
-                        </td>
-                        {# DL #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[100px] flex items-center justify-content-center">
-                            <span class="text-sm font-semibold text-emerald-300">{{ proxy.avg_dl_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
-                        </td>
-                        {# UL #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[100px] flex items-center justify-content-center">
-                            <span class="text-sm font-semibold text-indigo-300">{{ proxy.avg_ul_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
-                        </td>
-                        {# Score #}
-                        <td class="px-4 py-4 whitespace-nowrap min-w-[80px] flex items-center justify-content-center">
-                            <span class="px-3 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 font-bold">{{ proxy.max_speed_score | int }}</span>
-                        </td>
-                        {# Tested #}
-                        <td class="px-4 py-4 text-sm text-slate-400 whitespace-nowrap min-w-[120px]">{{ proxy.last_tested[:16].replace('T', ' ') }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-
-        </div>
-    {% else %}
-    <div class="px-6 py-16 text-center">
-        {# ... (Empty state remains the same) #}
-    </div>
-    {% endif %}
-</div>
-    <span class="px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-semibold">
-        {{ proxies|length }} {{ t(request, 'proxies_working', default='working') }}
-    </span>
-</div>
-
-<div class="glass rounded-2xl overflow-hidden">
-    {% if proxies %}
     <div class="overflow-x-auto">
         <table class="w-full border-collapse">
             <thead>
                 <tr class="border-b border-slate-700/30">
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-12">#</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">#</th>
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'proxies_col_config', default='Proxy Config') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">{{ t(request, 'proxies_col_nodes', default='Nodes') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_tests', default='Tests') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_ping', default='Best Ping') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_dl', default='Avg DL') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-24 whitespace-nowrap">{{ t(request, 'proxies_col_ul', default='Avg UL') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-20 whitespace-nowrap">{{ t(request, 'proxies_col_score', default='Score') }}</th>
-                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-32 whitespace-nowrap">{{ t(request, 'proxies_col_tested', default='Tested') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[120px]">{{ t(request, 'proxies_col_nodes', default='Nodes') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_tests', default='Tests') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[80px]">{{ t(request, 'proxies_col_ping', default='Ping') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_dl', default='Avg DL') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[100px]">{{ t(request, 'proxies_col_ul', default='Avg UL') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[80px]">{{ t(request, 'proxies_col_score', default='Score') }}</th>
+                    <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap min-w-[120px]">{{ t(request, 'proxies_col_tested', default='Tested') }}</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-700/20">
@@ -113,7 +33,7 @@
                     <td class="px-4 py-4 min-w-[300px]">
                         <div class="flex items-center gap-3">
                             <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
-                            <span class="text-sm text-slate-200 truncate max-w-lg font-mono">{{ proxy.raw_url[:80] }}{% if proxy.raw_url|length > 80 %}…{% endif %}</span>
+                            <span class="text-sm text-slate-200 truncate max-w-lg font-mono">{{ proxy.raw_url[:80] }}{% if proxy.raw_url|length > 80 %}...{% endif %}</span>
                         </div>
                     </td>
                     <td class="px-4 py-4">
