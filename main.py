@@ -166,6 +166,7 @@ async def on_startup():
                 speed_test_top_n=0,
                 node_api_token=secrets.token_hex(16),
                 node_check_top_n=50,
+                ban_duration_hours=168,
             )
             session.add(settings)
 
@@ -434,6 +435,7 @@ async def settings_save(
             settings.webhook_min_dl_kbps = max(0, webhook_min_dl_kbps)
             settings.webhook_min_ul_kbps = max(0, webhook_min_ul_kbps)
             settings.webhook_rename_prefix = webhook_rename_prefix.strip()
+            settings.ban_duration_hours = max(1, ban_duration_hours)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
