@@ -2,11 +2,11 @@
 
 import base64
 import logging
-
 import httpx
+from datetime import datetime, timezone, timedelta
 from sqlmodel import Session, select
 
-from database import Subscription, engine
+from database import Subscription, RawProxy, engine
 
 logger = logging.getLogger("vpn_checker.subs_manager")
 
@@ -49,12 +49,9 @@ async def fetch_and_parse_subscriptions(session=None) -> list[str]:
     # Get banned proxies if session is provided
     banned_urls = set()
     if session is not None:
+        ban_duration = 168  # default 7 days
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=ban_duration)).isoformat()
         with Session(engine) as ban_session:
-            ban_duration = 168  # default 7 days
-            settings = ban_session.exec(select(Settings)).first()
-            if settings and settings.ban_duration_hours > 0:
-                ban_duration = settings.ban_duration_hours
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=ban_duration)).isoformat()
             banned = ban_session.exec(
                 select(RawProxy.raw_url).where(RawProxy.banned_until > cutoff)
             ).all()
