@@ -32,6 +32,8 @@ class Subscription(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     url: str = Field(unique=True, index=True)
     added_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    is_enabled: bool = Field(default=True)
+    last_config_count: int = Field(default=0)
 
 
 class RawProxy(SQLModel, table=True):
@@ -134,7 +136,7 @@ def _migrate_db():
     db_path = DATABASE_URL.replace("sqlite:///", "")
     try:
         conn = sqlite3.connect(db_path)
-
+        
         # Settings migrations
         cursor = conn.execute("PRAGMA table_info(settings)")
         existing = {row[1] for row in cursor.fetchall()}
@@ -154,7 +156,15 @@ def _migrate_db():
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
-
+        
+        # Subscription migrations
+        cursor = conn.execute("PRAGMA table_info(subscriptions)")
+        sub_existing = {row[1] for row in cursor.fetchall()}
+        if "is_enabled" not in sub_existing:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN is_enabled INTEGER DEFAULT 1")
+        if "last_config_count" not in sub_existing:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN last_config_count INTEGER DEFAULT 0")
+        
         conn.commit()
         conn.close()
 

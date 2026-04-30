@@ -70,38 +70,39 @@ async def _scheduler_loop():
             # Run the fetch pipeline
             logger.info("Scheduler: starting scheduled subscription fetch")
             
-            # Get good proxies from previous tests (tests_passed > 0)
+            # Get good proxies from previous tests (tests_passed >0)
             with Session(engine) as session:
                 good_proxies = session.exec(
                     select(NodeProxyResult.raw_url)
-                    .where(NodeProxyResult.tests_passed > 0)
+                    .where(NodeProxyResult.tests_passed >0)
                     .distinct()
                 ).all()
                 good_proxies = [row[0] for row in good_proxies]
                 logger.info(f"Scheduler: found {len(good_proxies)} good proxies from previous tests")
             
-            proxy_links = await fetch_and_parse_subscriptions()
-            new_set = set(proxy_links)
-            
-            # Add good proxies that disappeared from subscriptions
-            added_count = 0
-            for p in good_proxies:
-                if p not in new_set:
-                    proxy_links.append(p)
-                    added_count += 1
-            
-            if added_count > 0:
-                logger.info(f"Scheduler: added {added_count} good proxies that disappeared from subscriptions")
-            
-            if proxy_links:
-                with Session(engine) as session:
+            # Pass session to update last_config_count and skip disabled
+            with Session(engine) as session:
+                proxy_links = await fetch_and_parse_subscriptions(session)
+                new_set = set(proxy_links)
+                
+                # Add good proxies that disappeared from subscriptions
+                added_count = 0
+                for p in good_proxies:
+                    if p not in new_set:
+                        proxy_links.append(p)
+                        added_count += 1
+                
+                if added_count >0:
+                    logger.info(f"Scheduler: added {added_count} good proxies that disappeared from subscriptions")
+                
+                if proxy_links:
                     session.exec(delete(RawProxy))
                     for url in proxy_links:
                         session.add(RawProxy(raw_url=url))
                     session.commit()
-                logger.info(f"Scheduler: fetched {len(proxy_links)} proxies for workers")
-            else:
-                logger.warning("Scheduler: no proxy links found from subscriptions")
+                    logger.info(f"Scheduler: fetched {len(proxy_links)} proxies for workers")
+                else:
+                    logger.warning("Scheduler: no proxy links found from subscriptions")
 
             scheduler_status["last_run_at"] = datetime.now(timezone.utc).isoformat()
 

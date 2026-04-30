@@ -34,12 +34,19 @@ def _extract_proxy_links(text: str) -> list[str]:
     return links
 
 
-async def fetch_and_parse_subscriptions() -> list[str]:
-    """Fetch all subscription URLs and extract unique VLESS links."""
-    with Session(engine) as session:
-        subs = session.exec(select(Subscription)).all()
-
+async def fetch_and_parse_subscriptions(session=None) -> list[str]:
+    """Fetch all subscription URLs and extract unique VLESS link.
+    If session is provided, updates last_config_count for each subscription.
+    Only fetches from enabled subscriptions if session is provided.
+    """
+    with Session(engine) as local_session:
+        if session is None:
+            subs = local_session.exec(select(Subscription)).all()
+        else:
+            subs = session.exec(select(Subscription)).all()
+    
     all_proxies: list[str] = []
+    sub_proxy_counts = {}  # Track proxy count per subscription
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(15.0),
@@ -47,28 +54,45 @@ async def fetch_and_parse_subscriptions() -> list[str]:
         verify=False,
     ) as client:
         for sub in subs:
+            # Skip disabled subscriptions if we have a session (meaning we're in the full fetch flow)
+            if session is not None and not sub.is_enabled:
+                logger.info(f"Skipping disabled subscription: {sub.url}")
+                continue
+            
             try:
                 logger.info(f"Fetching subscription: {sub.url}")
                 resp = await client.get(sub.url)
                 resp.raise_for_status()
                 raw_text = resp.text.strip()
-
+                
                 # Try base64 decode first
                 decoded = _decode_base64(raw_text)
                 proxy_links = _extract_proxy_links(decoded)
-
+                
                 # If no links found via base64, try raw text
                 if not proxy_links:
                     proxy_links = _extract_proxy_links(raw_text)
-
+                
                 if proxy_links:
                     all_proxies.extend(proxy_links)
+                    sub_proxy_counts[sub.url] = len(proxy_links)
                     logger.info(f"Found {len(proxy_links)} proxy links in {sub.url}")
-
+                else:
+                    sub_proxy_counts[sub.url] = 0
+                
             except Exception as e:
                 logger.warning(f"Failed to fetch {sub.url}: {e}")
+                sub_proxy_counts[sub.url] = 0
+
+    # Update last_config_count if session is provided
+    if session is not None:
+        for sub in subs:
+            if sub.url in sub_proxy_counts:
+                sub.last_config_count = sub_proxy_counts[sub.url]
+        session.add_all(subs)
+        session.commit()
 
     # Deduplicate
     unique = list(dict.fromkeys(all_proxies))
-    logger.info(f"Total unique Proxy links: {len(unique)}")
+    logger.info(f"Total unique proxy links: {len(unique)}")
     return unique

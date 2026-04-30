@@ -286,11 +286,6 @@ async def main():
             
         logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
         await asyncio.sleep(config.poll_interval_s)
-                
-        except Exception as e:
-            logger.error(f"Unhandled error in main loop: {e}")
-            logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
-            await asyncio.sleep(config.poll_interval_s)
 
 if __name__ == "__main__":
     try:

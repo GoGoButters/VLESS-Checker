@@ -310,6 +310,20 @@ async def delete_subscription(request: Request, sub_id: int):
     return RedirectResponse("/subscriptions", status_code=302)
 
 
+@app.post("/subscriptions/toggle/{sub_id}")
+async def toggle_subscription(request: Request, sub_id: int):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        sub = session.get(Subscription, sub_id)
+        if sub:
+            sub.is_enabled = not sub.is_enabled
+            session.add(sub)
+            session.commit()
+    return RedirectResponse("/subscriptions", status_code=302)
+
+
 # ---------------------------------------------------------------------------
 # TEST URLS
 # ---------------------------------------------------------------------------
@@ -495,14 +509,10 @@ async def proxies_page(request: Request):
         nc = agg["node_count"]
         agg["avg_dl_kbps"] = agg["dl_sum"] // nc if nc else 0
         agg["avg_ul_kbps"] = agg["ul_sum"] // nc if nc else 0
-        # Apply multiplier: proxies on more nodes get higher effective score
-        # Multiplier: 1.0 for 1 node, 1.5 for 2 nodes, 2.0 for 3+ nodes
-        node_multiplier = min(nc * 0.5 + 0.5, 3.0) if nc > 0 else 1.0
-        agg["effective_score"] = agg["max_speed_score"] * node_multiplier
         proxy_list.append(agg)
     
-    # Sort: most nodes -> highest effective score -> lowest ping
-    proxy_list.sort(key=lambda x: (-x["node_count"], -x["effective_score"], x["best_ping_ms"]))
+    # Sort: most nodes passed -> highest speed -> lowest ping
+    proxy_list.sort(key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"]))
 
     return templates.TemplateResponse(request, "proxies.html", {
         "user": user,
@@ -790,24 +800,25 @@ async def _background_fetch():
             good_proxies = [row[0] for row in good_proxies]
             logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
 
-        proxy_links = await fetch_and_parse_subscriptions()
-        new_set = set(proxy_links)
-
-        # Add good proxies that disappeared from subscriptions
-        added_count = 0
-        for p in good_proxies:
-            if p not in new_set:
-                proxy_links.append(p)
-                added_count += 1
-
-        if added_count > 0:
-            logger.info(f"Added {added_count} good proxies that disappeared from subscriptions")
-
-        fetch_status["current_phase"] = "saving"
-        fetch_status["fetched_proxies"] = len(proxy_links)
-
-        # Store raw proxies
+        # Pass session to update last_config_count
         with Session(engine) as session:
+            proxy_links = await fetch_and_parse_subscriptions(session)
+            new_set = set(proxy_links)
+
+            # Add good proxies that disappeared from subscriptions
+            added_count = 0
+            for p in good_proxies:
+                if p not in new_set:
+                    proxy_links.append(p)
+                    added_count += 1
+
+            if added_count > 0:
+                logger.info(f"Added {added_count} good proxies that disappeared from subscriptions")
+
+            fetch_status["current_phase"] = "saving"
+            fetch_status["fetched_proxies"] = len(proxy_links)
+
+            # Store raw proxies
             session.exec(delete(RawProxy))
             for url in proxy_links:
                 session.add(RawProxy(raw_url=url))
@@ -923,20 +934,15 @@ async def webhook_output(secret_path: str):
             consensus_list = []
             for link, data in stats.items():
                 avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
-                passes = data["passes"]
-                # Apply multiplier: proxies on more nodes get higher effective score
-                node_multiplier = min(passes * 0.5 + 0.5, 3.0) if passes > 0 else 1.0
-                effective_score = avg_speed * node_multiplier
                 consensus_list.append({
                     "link": link,
-                    "passes": passes,
+                    "passes": data["passes"],
                     "avg_speed": avg_speed,
-                    "effective_score": effective_score,
                     "dl": data["dl_max"],
                     "ul": data["ul_max"],
                 })
             
-            consensus_list.sort(key=lambda x: (x["passes"], x["effective_score"]), reverse=True)
+            consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)
 
             top_n = settings.global_sub_top_n
             if top_n > 0:
