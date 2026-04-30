@@ -770,7 +770,8 @@ async def fetch_subs(request: Request):
 
 
 async def _background_fetch():
-    """Background task: fetch subscriptions and store raw proxies."""
+    """Background task: fetch subscriptions and store raw proxies.
+    Also preserves 'good' proxies that passed previous tests but disappeared from sources."""
     try:
         fetch_status["running"] = True
         fetch_status["current_phase"] = "fetching"
@@ -779,7 +780,27 @@ async def _background_fetch():
         with Session(engine) as session:
             fetch_status["total_subs"] = session.exec(select(func.count(Subscription.id))).one()
 
+        # Get good proxies from previous tests (tests_passed > 0)
+        with Session(engine) as session:
+            good_proxies = session.exec(
+                select(NodeProxyResult.raw_url)
+                .where(NodeProxyResult.tests_passed > 0)
+                .distinct()
+            ).scalars().all()
+            logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
+
         proxy_links = await fetch_and_parse_subscriptions()
+        new_set = set(proxy_links)
+
+        # Add good proxies that disappeared from subscriptions
+        added_count = 0
+        for p in good_proxies:
+            if p not in new_set:
+                proxy_links.append(p)
+                added_count += 1
+
+        if added_count > 0:
+            logger.info(f"Added {added_count} good proxies that disappeared from subscriptions")
 
         fetch_status["current_phase"] = "saving"
         fetch_status["fetched_proxies"] = len(proxy_links)

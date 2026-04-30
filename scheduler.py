@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Session, select, delete
 
-from database import Settings, Subscription, RawProxy, engine
+from database import Settings, Subscription, RawProxy, NodeProxyResult, engine
 from subs_manager import fetch_and_parse_subscriptions
 
 logger = logging.getLogger("vpn_checker.scheduler")
@@ -69,8 +69,29 @@ async def _scheduler_loop():
 
             # Run the fetch pipeline
             logger.info("Scheduler: starting scheduled subscription fetch")
-
+            
+            # Get good proxies from previous tests (tests_passed > 0)
+            with Session(engine) as session:
+                good_proxies = session.exec(
+                    select(NodeProxyResult.raw_url)
+                    .where(NodeProxyResult.tests_passed > 0)
+                    .distinct()
+                ).scalars().all()
+                logger.info(f"Scheduler: found {len(good_proxies)} good proxies from previous tests")
+            
             proxy_links = await fetch_and_parse_subscriptions()
+            new_set = set(proxy_links)
+            
+            # Add good proxies that disappeared from subscriptions
+            added_count = 0
+            for p in good_proxies:
+                if p not in new_set:
+                    proxy_links.append(p)
+                    added_count += 1
+            
+            if added_count > 0:
+                logger.info(f"Scheduler: added {added_count} good proxies that disappeared from subscriptions")
+            
             if proxy_links:
                 with Session(engine) as session:
                     session.exec(delete(RawProxy))
