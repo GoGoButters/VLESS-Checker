@@ -509,9 +509,19 @@ async def proxies_page(request: Request):
         nc = agg["node_count"]
         agg["avg_dl_kbps"] = agg["dl_sum"] // nc if nc else 0
         agg["avg_ul_kbps"] = agg["ul_sum"] // nc if nc else 0
+        # Ensure all required keys exist for template
+        agg.setdefault("raw_url", "")
+        agg.setdefault("node_count", 0)
+        agg.setdefault("total_tests_passed", 0)
+        agg.setdefault("total_tests_total", 0)
+        agg.setdefault("best_ping_ms", 0)
+        agg.setdefault("avg_dl_kbps", 0)
+        agg.setdefault("avg_ul_kbps", 0)
+        agg.setdefault("max_speed_score", 0)
+        agg.setdefault("last_tested", "")
         proxy_list.append(agg)
     
-    # Sort: most nodes passed -> highest speed -> lowest ping
+    # Sort: most nodes -> highest speed -> lowest ping
     proxy_list.sort(key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"]))
 
     return templates.TemplateResponse(request, "proxies.html", {
