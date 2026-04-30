@@ -18,7 +18,7 @@
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase">#</th>
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Config</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Nodes</th>
-                    <th class="text-center px-4 py-4 text-xs font-semibeld text-slate-400 uppercase">Tests</th>
+                    <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Tests</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Ping</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">DL</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">UL</th>
@@ -53,14 +53,14 @@
                     </td>
                     <td class="px-4 py-4 text-center">
                         {% if p.avg_dl_kbps > 0 %}
-                        <span class="text-sm font-semibold text-emerald-400">{{ p.avg_dl_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                        <span class="text-sm font-semibold text-emerald-400">{{ p.avg_dl_kbps }} <span class="text-[10px] text-slate-500">KB/s</span></span>
                         {% else %}
                         <span class="text-sm text-slate-500">—</span>
                         {% endif %}
                     </td>
                     <td class="px-4 py-4 text-center">
                         {% if p.avg_ul_kbps > 0 %}
-                        <span class="text-sm font-semibold text-indigo-400">{{ p.avg_ul_kbps }} <span class="text-[10px] text-slate-500 font-normal">KB/s</span></span>
+                        <span class="text-sm font-semibold text-indigo-400">{{ p.avg_ul_kbps }} <span class="text-[10px] text-slate-500">KB/s</span></span>
                         {% else %}
                         <span class="text-sm text-slate-500">—</span>
                         {% endif %}
