@@ -279,26 +279,13 @@ async def main():
             await app.register()
                 
             if app.node_id:
-                # Get config to check schedule interval
-                test_config = await app.get_test_config()
-                schedule_interval = test_config.get("schedule_interval_minutes", 0) if test_config else 0
-                
                 await app.run_testing_cycle()
                 
-                # Sleep logic: use max of poll_interval_s and schedule_interval*60
-                sleep_time = config.poll_interval_s
-                if schedule_interval > 0:
-                    # Only extend sleep time if schedule interval is longer
-                    schedule_seconds = schedule_interval * 60
-                    if schedule_seconds > sleep_time:
-                        sleep_time = schedule_seconds
-                        logger.info(f"Scheduler interval is {schedule_interval}min, sleeping for {sleep_time}s")
-                
-                logger.debug(f"Sleeping for {sleep_time} seconds...")
-                await asyncio.sleep(sleep_time)
-            else:
-                logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
-                await asyncio.sleep(config.poll_interval_s)
+        except Exception as e:
+            logger.error(f"Unhandled error in main loop: {e}")
+            
+        logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
+        await asyncio.sleep(config.poll_interval_s)
                 
         except Exception as e:
             logger.error(f"Unhandled error in main loop: {e}")
