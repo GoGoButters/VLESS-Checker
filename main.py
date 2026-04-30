@@ -786,7 +786,8 @@ async def _background_fetch():
                 select(NodeProxyResult.raw_url)
                 .where(NodeProxyResult.tests_passed > 0)
                 .distinct()
-            ).scalars().all()
+            ).all()
+            good_proxies = [row[0] for row in good_proxies]
             logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
 
         proxy_links = await fetch_and_parse_subscriptions()
