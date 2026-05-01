@@ -727,22 +727,6 @@ async def node_post_results(request: Request, authorization: str = Header(None))
         node.last_heartbeat = now
         node.is_online = True
         session.add(node)
-
-        # Ban failed proxies
-        if failed_urls:
-            ban_duration = 168  # default 7 days
-            settings = session.exec(select(Settings)).first()
-            if settings and settings.ban_duration_hours > 0:
-                ban_duration = settings.ban_duration_hours
-            ban_until = (datetime.now(timezone.utc) + timedelta(hours=ban_duration)).isoformat()
-            
-            for url in set(failed_urls):
-                rp = session.exec(select(RawProxy).where(RawProxy.raw_url == url)).first()
-                if rp:
-                    rp.banned_until = ban_until
-            
-            logger.info(f"Banned {len(set(failed_urls))} failed proxies for {ban_duration}h")
-
         session.commit()
 
     logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")

@@ -277,11 +277,13 @@ class NodeApp:
                     json={"node_id": self.node_id, "logs": logs}
                 )
                 if resp.status_code != 200:
+                    print(f"WARNING: Log delivery failed: HTTP {resp.status_code} - {resp.text[:200]}", file=sys.stderr, flush=True)
                     with remote_log_handler._buffer_lock:
                         remote_log_handler.logs = logs + remote_log_handler.logs
                         if len(remote_log_handler.logs) > 1000:
                             remote_log_handler.logs = remote_log_handler.logs[-1000:]
             except Exception as e:
+                print(f"WARNING: Log delivery error: {e}", file=sys.stderr, flush=True)
                 with remote_log_handler._buffer_lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
