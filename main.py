@@ -873,7 +873,8 @@ async def node_logs(request: Request, authorization: str = Header(None)):
 
 # ---------------------------------------------------------------------------
 # FETCH SUBSCRIPTIONS (replaces run-test)
-# ---------------------------------------------------------------------------
+_background_tasks = set()
+
 @app.post("/fetch-subs")
 async def fetch_subs(request: Request):
     user = get_current_user(request)
@@ -883,7 +884,9 @@ async def fetch_subs(request: Request):
     if fetch_status["running"]:
         return RedirectResponse("/", status_code=302)
 
-    asyncio.create_task(_background_fetch())
+    task = asyncio.create_task(_background_fetch())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return RedirectResponse("/", status_code=302)
 
 
