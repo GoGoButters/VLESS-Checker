@@ -49,7 +49,7 @@ class RemoteLogHandler(logging.Handler):
                 if len(self.logs) > 1000:
                     self.logs = self.logs[-1000:]
         except Exception as e:
-            print(f"ERROR in RemoteLogHandler.emit: {e}", file=sys.stderr, flush=True)
+            print(f"ERROR in RemoteLogHandler.emit: {repr(e)}", file=sys.stderr, flush=True)
 
     def pop_all(self):
         try:
@@ -58,7 +58,7 @@ class RemoteLogHandler(logging.Handler):
                 self.logs.clear()
                 return logs
         except Exception as e:
-            print(f"ERROR in RemoteLogHandler.pop_all: {e}", file=sys.stderr, flush=True)
+            print(f"ERROR in RemoteLogHandler.pop_all: {repr(e)}", file=sys.stderr, flush=True)
             return []
 
 remote_log_handler = RemoteLogHandler()
@@ -93,7 +93,7 @@ class NodeApp:
                 logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
-            logger.error(f"Error registering node: {e}")
+            logger.error(f"Error registering node: {repr(e)}")
             return False
 
     async def get_test_config(self):
@@ -103,7 +103,7 @@ class NodeApp:
                 return resp.json()
             return None
         except Exception as e:
-            logger.error(f"Error fetching config: {e}")
+            logger.error(f"Error fetching config: {repr(e)}")
             return None
 
     async def get_proxies(self):
@@ -117,7 +117,7 @@ class NodeApp:
                 return run_id, proxies
             return None, []
         except Exception as e:
-            logger.error(f"Error fetching proxies: {e}")
+            logger.error(f"Error fetching proxies: {repr(e)}")
             return None, []
 
     async def report_results(self, results, checked_count: int = 0):
@@ -137,7 +137,7 @@ class NodeApp:
                 logger.error(f"Failed to report results: HTTP {resp.status_code} - {resp.text}")
                 return False
         except Exception as e:
-            logger.error(f"Error reporting results: {e}")
+            logger.error(f"Error reporting results: {repr(e)}")
             return False
 
     async def run_testing_cycle(self):
@@ -253,10 +253,12 @@ class NodeApp:
             await asyncio.gather(*[_speed_one(p) for p in to_test])
 
         # 6. Report ALL results (passed + failed) and save run_id
+        self.last_run_id = run_id
         reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"])
         if reported:
-            self.last_run_id = run_id
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
+        else:
+            logger.warning(f"Failed to report results for run_id={run_id}, but saved run_id to avoid immediate re-testing.")
 
     async def log_sender_loop(self):
         while True:
@@ -283,7 +285,7 @@ class NodeApp:
                         if len(remote_log_handler.logs) > 1000:
                             remote_log_handler.logs = remote_log_handler.logs[-1000:]
             except Exception as e:
-                print(f"WARNING: Log delivery error: {e}", file=sys.stderr, flush=True)
+                print(f"WARNING: Log delivery error: {repr(e)}", file=sys.stderr, flush=True)
                 with remote_log_handler._buffer_lock:
                     remote_log_handler.logs = logs + remote_log_handler.logs
                     if len(remote_log_handler.logs) > 1000:
@@ -296,7 +298,7 @@ async def main():
     app = NodeApp()
     
     # Start the log sender loop in the background
-    asyncio.create_task(app.log_sender_loop())
+    app._log_task = asyncio.create_task(app.log_sender_loop())
     
     while True:
         try:
@@ -308,7 +310,7 @@ async def main():
                 await app.run_testing_cycle()
                 
         except Exception as e:
-            logger.error(f"Unhandled error in main loop: {e}")
+            logger.error(f"Unhandled error in main loop: {repr(e)}")
             
         logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
         await asyncio.sleep(config.poll_interval_s)
@@ -319,5 +321,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Node shut down by user.")
     except Exception as e:
-        logger.critical(f"Critical error during startup: {e}", exc_info=True)
+        logger.critical(f"Critical error during startup: {repr(e)}", exc_info=True)
         sys.exit(1)

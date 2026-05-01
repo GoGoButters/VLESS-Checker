@@ -14,7 +14,7 @@ import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Request, Form, HTTPException, Header
+from fastapi import FastAPI, Request, Form, HTTPException, Header, BackgroundTasks
 from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -681,7 +681,7 @@ async def node_get_proxies(authorization: str = Header(None)):
 
 
 @app.post("/api/node/results")
-async def node_post_results(request: Request, authorization: str = Header(None)):
+async def node_post_results(request: Request, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     if not _verify_node_token(authorization):
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -732,7 +732,7 @@ async def node_post_results(request: Request, authorization: str = Header(None))
     logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")
 
     # Evaluate bans across all nodes
-    _evaluate_bans()
+    background_tasks.add_task(_evaluate_bans)
 
     return {"status": "ok", "accepted": len(results)}
 
@@ -780,8 +780,17 @@ def _evaluate_bans():
             reset_count = 0
             now_iso = datetime.now(timezone.utc).isoformat()
 
+            # Load tested RawProxies in chunks to avoid SQLite limits
+            tested_urls_list = list(tested_urls)
+            raw_proxy_map = {}
+            for i in range(0, len(tested_urls_list), 900):
+                chunk = tested_urls_list[i:i+900]
+                chunk_rps = session.exec(select(RawProxy).where(RawProxy.raw_url.in_(chunk))).all()
+                for rp in chunk_rps:
+                    raw_proxy_map[rp.raw_url] = rp
+
             for raw_url in tested_urls:
-                rp = session.exec(select(RawProxy).where(RawProxy.raw_url == raw_url)).first()
+                rp = raw_proxy_map.get(raw_url)
                 if not rp:
                     continue
 
