@@ -193,7 +193,37 @@ class NodeApp:
 
         logger.info(f"Proxy checks done: {status_dict['passed']} passed, {status_dict['failed']} failed out of {status_dict['checked']} checked.")
 
-        # 4. Optional: Speed testing phase
+        # 4. Build results for ALL tested proxies (passed + failed)
+        # We need to report failures too so the master can evaluate bans across all nodes
+        all_tested_results = []
+        passed_urls = set()
+        
+        for p in valid_proxies:
+            passed_urls.add(p.raw_url)
+            all_tested_results.append({
+                "raw_url": p.raw_url,
+                "ping_ms": p.ping_ms,
+                "tests_passed": p.tests_passed,
+                "tests_total": p.tests_total,
+                "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
+                "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
+                "speed_score": getattr(p, "speed_score", 0.0),
+            })
+        
+        # Add failed proxies (those that were tested but didn't pass)
+        for url in raw_urls:
+            if url not in passed_urls:
+                all_tested_results.append({
+                    "raw_url": url,
+                    "ping_ms": 0,
+                    "tests_passed": 0,
+                    "tests_total": len(test_urls),
+                    "download_speed_kbps": 0,
+                    "upload_speed_kbps": 0,
+                    "speed_score": 0.0,
+                })
+
+        # 5. Optional: Speed testing phase
         if speed_top_n > 0 and valid_proxies:
             from speed_tester import _measure_speed, _compute_speed_score
             logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies (multi-stream)...")
@@ -210,26 +240,20 @@ class NodeApp:
                         p.upload_speed_kbps = ul
                         p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
                         logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f}")
+                        # Update the result in all_tested_results
+                        for r in all_tested_results:
+                            if r["raw_url"] == p.raw_url:
+                                r["download_speed_kbps"] = dl
+                                r["upload_speed_kbps"] = ul
+                                r["speed_score"] = p.speed_score
+                                break
                     else:
                         p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
 
             await asyncio.gather(*[_speed_one(p) for p in to_test])
 
-        # 5. Format results for reporting
-        final_results = []
-        for p in valid_proxies:
-            final_results.append({
-                "raw_url": p.raw_url,
-                "ping_ms": p.ping_ms,
-                "tests_passed": p.tests_passed,
-                "tests_total": p.tests_total,
-                "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
-                "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
-                "speed_score": getattr(p, "speed_score", 0.0),
-            })
-
-        # 6. Report results and save run_id
-        reported = await self.report_results(final_results, checked_count=status_dict["checked"])
+        # 6. Report ALL results (passed + failed) and save run_id
+        reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"])
         if reported:
             self.last_run_id = run_id
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")

@@ -72,12 +72,19 @@ async def _scheduler_loop():
             
             # Get good proxies from previous tests (tests_passed >0)
             with Session(engine) as session:
-                good_proxies = session.exec(
+
+                good_results = session.exec(
                     select(NodeProxyResult.raw_url)
                     .where(NodeProxyResult.tests_passed >0)
                     .distinct()
                 ).all()
-                good_proxies = [row[0] for row in good_proxies]
+
+                # Handle both tuple and scalar results from SQLModel
+                good_proxies = []
+                for row in good_results:
+                    url = row[0] if isinstance(row, tuple) else row
+                    if url:
+                        good_proxies.append(str(url))
                 logger.info(f"Scheduler: found {len(good_proxies)} good proxies from previous tests")
             
             # Pass session to update last_config_count and skip disabled

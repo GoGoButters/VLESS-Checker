@@ -6,7 +6,8 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from sqlmodel import Session, select
 
-from database import Subscription, RawProxy, engine
+
+from database import Subscription, RawProxy, Settings, engine
 
 logger = logging.getLogger("vpn_checker.subs_manager")
 
@@ -38,7 +39,8 @@ async def fetch_and_parse_subscriptions(session=None) -> list[str]:
     """Fetch all subscription URLs and extract unique VLESS link.
     If session is provided, updates last_config_count for each subscription.
     Only fetches from enabled subscriptions if session is provided.
-    Excludes proxies banned less than ban_duration_hours ago.
+
+    Excludes proxies that are currently banned (banned_until > now).
     """
     with Session(engine) as local_session:
         if session is None:
@@ -46,18 +48,26 @@ async def fetch_and_parse_subscriptions(session=None) -> list[str]:
         else:
             subs = session.exec(select(Subscription)).all()
     
-    # Get banned proxies if session is provided
+
+    # Get banned proxies — simply check if banned_until > now
     banned_urls = set()
     if session is not None:
-        ban_duration = 168  # default 7 days
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=ban_duration)).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
         with Session(engine) as ban_session:
-            banned = ban_session.exec(
-                select(RawProxy.raw_url).where(RawProxy.banned_until > cutoff)
-            ).all()
-            banned_urls = {row[0] for row in banned}
-            if banned_urls:
-                logger.info(f"Excluding {len(banned_urls)} banned proxies (ban duration: {ban_duration}h)")
+            # Read ban_duration from settings to check if bans are enabled
+            settings = ban_session.exec(select(Settings)).first()
+            ban_enabled = settings and settings.ban_duration_hours > 0
+            
+            if ban_enabled:
+                banned = ban_session.exec(
+                    select(RawProxy.raw_url).where(RawProxy.banned_until > now_iso)
+                ).all()
+                # Handle both tuple and scalar results from SQLModel
+                for row in banned:
+                    url = row[0] if isinstance(row, tuple) else row
+                    banned_urls.add(url)
+                if banned_urls:
+                    logger.info(f"Excluding {len(banned_urls)} currently banned proxies")
     
     all_proxies: list[str] = []
     sub_proxy_counts = {}  # Track proxy count per subscription

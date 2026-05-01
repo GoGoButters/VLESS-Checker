@@ -44,6 +44,8 @@ class RawProxy(SQLModel, table=True):
     fetched_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     banned_until: Optional[str] = Field(default=None, index=True)  # ISO timestamp or None
 
+    consecutive_failures: int = Field(default=0)  # Consecutive check cycles failed on ALL workers
+
 
 class TestUrl(SQLModel, table=True):
     """User-configurable URLs to check proxies against."""
@@ -94,6 +96,8 @@ class Settings(SQLModel, table=True):
 
     # Ban settings
     ban_duration_hours: int = Field(default=168)  # 7 days = 168 hours, 0 = disabled
+
+    ban_after_n_failures: int = Field(default=3)  # Ban after N consecutive failures on ALL workers
 
 
 class Node(SQLModel, table=True):
@@ -157,6 +161,8 @@ def _migrate_db():
             ("webhook_min_ul_kbps", "INTEGER DEFAULT 0"),
             ("webhook_rename_prefix", "TEXT DEFAULT ''"),
             ("ban_duration_hours", "INTEGER DEFAULT 168"),
+
+            ("ban_after_n_failures", "INTEGER DEFAULT 3"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
@@ -175,6 +181,9 @@ def _migrate_db():
         raw_existing = {row[1] for row in cursor.fetchall()}
         if "banned_until" not in raw_existing:
             conn.execute("ALTER TABLE raw_proxies ADD COLUMN banned_until TEXT DEFAULT NULL")
+
+        if "consecutive_failures" not in raw_existing:
+            conn.execute("ALTER TABLE raw_proxies ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
         
         conn.commit()
         conn.close()

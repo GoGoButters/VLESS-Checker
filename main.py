@@ -12,7 +12,7 @@ import logging
 import secrets
 import hashlib
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Request, Form, HTTPException, Header
 from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
@@ -167,6 +167,8 @@ async def on_startup():
                 node_api_token=secrets.token_hex(16),
                 node_check_top_n=50,
                 ban_duration_hours=168,
+
+                ban_after_n_failures=3,
             )
             session.add(settings)
 
@@ -415,6 +417,8 @@ async def settings_save(
     webhook_min_ul_kbps: int = Form(0),
     webhook_rename_prefix: str = Form(""),
     ban_duration_hours: int = Form(168),
+
+    ban_after_n_failures: int = Form(3),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -435,7 +439,9 @@ async def settings_save(
             settings.webhook_min_dl_kbps = max(0, webhook_min_dl_kbps)
             settings.webhook_min_ul_kbps = max(0, webhook_min_ul_kbps)
             settings.webhook_rename_prefix = webhook_rename_prefix.strip()
-            settings.ban_duration_hours = max(1, ban_duration_hours)
+
+            settings.ban_duration_hours = max(0, ban_duration_hours)
+            settings.ban_after_n_failures = max(1, ban_after_n_failures)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
@@ -740,8 +746,94 @@ async def node_post_results(request: Request, authorization: str = Header(None))
         session.commit()
 
     logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")
+
+    # Evaluate bans across all nodes
+    _evaluate_bans()
+
     return {"status": "ok", "accepted": len(results)}
 
+
+def _evaluate_bans():
+    """Evaluate ban status for all proxies based on cross-node consensus.
+    
+    Rules:
+    - A proxy is considered 'failed' only if it failed on ALL connected workers
+    - If it passed on at least one worker → reset consecutive_failures to 0
+    - Ban only after N consecutive failures (ban_after_n_failures setting)
+    """
+    try:
+        with Session(engine) as session:
+            settings = session.exec(select(Settings)).first()
+            if not settings or settings.ban_duration_hours <= 0:
+                return  # Bans disabled
+
+            ban_threshold = settings.ban_after_n_failures or 3
+            ban_duration = settings.ban_duration_hours
+
+            # Get all online nodes that have reported results
+            nodes = session.exec(select(Node).where(Node.is_online == True)).all()
+            if not nodes:
+                return
+
+            node_ids = [n.id for n in nodes]
+
+            # Get all NodeProxyResults grouped by raw_url
+            all_results = session.exec(select(NodeProxyResult)).all()
+            
+            # Build per-proxy result map: raw_url -> {node_id: tests_passed}
+            proxy_node_results = defaultdict(dict)
+            for r in all_results:
+                if r.node_id in node_ids:
+                    proxy_node_results[r.raw_url][r.node_id] = r.tests_passed
+
+            # Get all raw proxies that were tested (have results from at least one node)
+            tested_urls = set(proxy_node_results.keys())
+            if not tested_urls:
+                return
+
+            # Evaluate each tested proxy
+            banned_count = 0
+            reset_count = 0
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            for raw_url in tested_urls:
+                rp = session.exec(select(RawProxy).where(RawProxy.raw_url == raw_url)).first()
+                if not rp:
+                    continue
+
+                node_results = proxy_node_results[raw_url]
+                
+                # Check if proxy passed on at least one worker
+                passed_on_any = any(tp > 0 for tp in node_results.values())
+
+                if passed_on_any:
+                    # Passed on at least one node → reset failures, unban if banned
+                    if rp.consecutive_failures > 0:
+                        rp.consecutive_failures = 0
+                        rp.banned_until = None
+                        reset_count += 1
+                else:
+                    # Failed on all nodes that tested it
+                    # Only count as failure if tested on ALL connected nodes
+                    tested_on_all = all(nid in node_results for nid in node_ids)
+                    if tested_on_all:
+                        rp.consecutive_failures += 1
+                        if rp.consecutive_failures >= ban_threshold:
+                            ban_until = (datetime.now(timezone.utc) + timedelta(hours=ban_duration)).isoformat()
+                            rp.banned_until = ban_until
+                            banned_count += 1
+
+                session.add(rp)
+
+            session.commit()
+
+            if banned_count > 0:
+                logger.info(f"Banned {banned_count} proxies (failed {ban_threshold}+ times on all {len(node_ids)} nodes, ban={ban_duration}h)")
+            if reset_count > 0:
+                logger.info(f"Reset {reset_count} proxy failure counters (passed on at least one node)")
+
+    except Exception as e:
+        logger.error(f"Error evaluating bans: {e}", exc_info=True)
 
 @app.post("/api/node/heartbeat")
 async def node_heartbeat(request: Request, authorization: str = Header(None)):
@@ -829,7 +921,13 @@ async def _background_fetch():
                 .where(NodeProxyResult.tests_passed > 0)
                 .distinct()
             ).all()
-            good_proxies = [str(row[0]) for row in results if row[0]]
+
+            # Handle both tuple and scalar results from SQLModel
+            good_proxies = []
+            for row in results:
+                url = row[0] if isinstance(row, tuple) else row
+                if url:
+                    good_proxies.append(str(url))
             logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
 
         # Pass session to update last_config_count
