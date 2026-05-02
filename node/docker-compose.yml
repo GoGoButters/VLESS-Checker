@@ -6,6 +6,10 @@ services:
     image: vpn_checker_node:latest
     container_name: checker-node
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     environment:
       - PYTHONUNBUFFERED=1
       - MASTER_URL=http://host.docker.internal:8000
