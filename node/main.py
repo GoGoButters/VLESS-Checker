@@ -70,11 +70,35 @@ class NodeApp:
         self.master_url = config.master_url.rstrip("/")
         self.node_id = None
         self.last_run_id = None  # Track the master's proxy list version
+        self.last_test_completed_at = None  # When the last test cycle finished
+        self.last_schedule_interval = 0  # Last known schedule interval from master
         self.http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
         )
         logger.info(f"NodeApp initialized. Master URL: {self.master_url}")
+
+    def _should_wait_for_schedule(self) -> bool:
+        """Check if we should still wait before running the next test cycle.
+        Returns True if the schedule interval hasn't elapsed yet."""
+        if self.last_test_completed_at is None:
+            return False  # Never tested, run immediately
+        if self.last_schedule_interval <= 0:
+            return False  # No interval configured, poll freely
+
+        elapsed = (datetime.now(timezone.utc) - self.last_test_completed_at).total_seconds()
+        remaining = (self.last_schedule_interval * 60) - elapsed
+        if remaining > 0:
+            return True
+        return False
+
+    def _get_remaining_wait_seconds(self) -> float:
+        """Get seconds remaining until the schedule interval elapses."""
+        if self.last_test_completed_at is None or self.last_schedule_interval <= 0:
+            return 0
+        elapsed = (datetime.now(timezone.utc) - self.last_test_completed_at).total_seconds()
+        remaining = (self.last_schedule_interval * 60) - elapsed
+        return max(0, remaining)
 
     async def register(self) -> bool:
         try:
@@ -161,6 +185,16 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
         schedule_interval = test_config.get("schedule_interval_minutes", 0)
+
+        # Update the known schedule interval from master
+        self.last_schedule_interval = schedule_interval
+
+        # Check if we should wait before running next cycle
+        if self._should_wait_for_schedule():
+            remaining = self._get_remaining_wait_seconds()
+            remaining_min = remaining / 60
+            logger.info(f"Schedule interval not elapsed yet. Next test in {remaining_min:.0f}min. Skipping cycle.")
+            return
 
         run_id, raw_urls = await self.get_proxies()
         logger.info(f"Fetched proxies: run_id={run_id}, last_run_id={self.last_run_id}, count={len(raw_urls)}, schedule_interval={schedule_interval}min")
@@ -254,9 +288,11 @@ class NodeApp:
 
         # 6. Report ALL results (passed + failed) and save run_id
         self.last_run_id = run_id
+        self.last_test_completed_at = datetime.now(timezone.utc)  # Track when this cycle finished
         reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"])
         if reported:
-            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.")
+            next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
+            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.{next_in}")
         else:
             logger.warning(f"Failed to report results for run_id={run_id}, but saved run_id to avoid immediate re-testing.")
 
@@ -312,8 +348,17 @@ async def main():
         except Exception as e:
             logger.error(f"Unhandled error in main loop: {repr(e)}")
             
-        logger.debug(f"Sleeping for {config.poll_interval_s} seconds...")
-        await asyncio.sleep(config.poll_interval_s)
+        # Use schedule-aware sleep: if we know the schedule interval,
+        # sleep in chunks but don't exceed the remaining wait time
+        remaining = app._get_remaining_wait_seconds()
+        if remaining > 0:
+            # Sleep in chunks of poll_interval_s to stay responsive to heartbeats
+            sleep_time = min(config.poll_interval_s, remaining)
+            logger.debug(f"Schedule wait: {remaining:.0f}s remaining, sleeping {sleep_time:.0f}s...")
+        else:
+            sleep_time = config.poll_interval_s
+            logger.debug(f"Sleeping for {sleep_time} seconds...")
+        await asyncio.sleep(sleep_time)
 
 if __name__ == "__main__":
     try:

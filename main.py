@@ -40,7 +40,7 @@ from auth import (
 from subs_manager import fetch_and_parse_subscriptions
 from scheduler import start_scheduler, scheduler_status
 from log_buffer import log_buffer, setup_log_buffer
-from proxy_parsers import replace_proxy_remark
+from proxy_parsers import replace_proxy_remark, get_proxy_identity
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -487,8 +487,9 @@ async def proxies_page(request: Request):
     # Aggregate across nodes
     aggregated = {}
     for r in all_results:
-        if r.raw_url not in aggregated:
-            aggregated[r.raw_url] = {
+        pid = get_proxy_identity(r.raw_url)
+        if pid not in aggregated:
+            aggregated[pid] = {
                 "raw_url": r.raw_url,
                 "node_count": 0,
                 "total_tests_passed": 0,
@@ -501,7 +502,7 @@ async def proxies_page(request: Request):
                 "dl_sum": 0,
                 "ul_sum": 0,
             }
-        agg = aggregated[r.raw_url]
+        agg = aggregated[pid]
         agg["node_count"] += 1
         agg["total_tests_passed"] += r.tests_passed
         agg["total_tests_total"] += r.tests_total
@@ -1048,22 +1049,23 @@ async def webhook_output(secret_path: str):
         global_prefix = f"{settings.webhook_secret_path}/global"
         if secret_path == global_prefix:
             # Aggregate all node results
-            stats = defaultdict(lambda: {"passes": 0, "speed_scores": [], "dl_max": 0, "ul_max": 0})
+            stats = defaultdict(lambda: {"passes": 0, "speed_scores": [], "dl_max": 0, "ul_max": 0, "link": ""})
 
             node_results = session.exec(select(NodeProxyResult)).all()
             for np_r in node_results:
                 if np_r.tests_passed > 0:
-                    link = np_r.raw_url
-                    stats[link]["passes"] += 1
-                    stats[link]["speed_scores"].append(np_r.speed_score)
-                    stats[link]["dl_max"] = max(stats[link]["dl_max"], np_r.download_speed_kbps)
-                    stats[link]["ul_max"] = max(stats[link]["ul_max"], np_r.upload_speed_kbps)
+                    pid = get_proxy_identity(np_r.raw_url)
+                    stats[pid]["link"] = np_r.raw_url  # Keep the latest
+                    stats[pid]["passes"] += 1
+                    stats[pid]["speed_scores"].append(np_r.speed_score)
+                    stats[pid]["dl_max"] = max(stats[pid]["dl_max"], np_r.download_speed_kbps)
+                    stats[pid]["ul_max"] = max(stats[pid]["ul_max"], np_r.upload_speed_kbps)
 
             consensus_list = []
-            for link, data in stats.items():
+            for pid, data in stats.items():
                 avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
                 consensus_list.append({
-                    "link": link,
+                    "link": data["link"],
                     "passes": data["passes"],
                     "avg_speed": avg_speed,
                     "dl": data["dl_max"],
@@ -1093,8 +1095,9 @@ async def webhook_output(secret_path: str):
 
         best_by_url = {}
         for r in all_results:
-            if r.raw_url not in best_by_url or r.speed_score > best_by_url[r.raw_url].speed_score:
-                best_by_url[r.raw_url] = r
+            pid = get_proxy_identity(r.raw_url)
+            if pid not in best_by_url or r.speed_score > best_by_url[pid].speed_score:
+                best_by_url[pid] = r
 
         proxies = sorted(
             best_by_url.values(),

@@ -263,6 +263,15 @@ def extract_host_port(url: str) -> tuple[str, int] | None:
     return None
 
 
+def get_proxy_identity(url: str) -> str:
+    """Return a stable identity string for a proxy, ignoring remarks/names."""
+    p = parse_proxy_url(url)
+    if p:
+        user = p.get("uuid") or p.get("password") or ""
+        return f"{p['type']}://{user}@{p.get('server', '')}:{p.get('server_port', 0)}"
+    return url.split("#")[0]
+
+
 def replace_proxy_remark(url: str, new_remark: str) -> str:
     """Replace the remark (fragment after #) in a proxy URI with a new name.
     
