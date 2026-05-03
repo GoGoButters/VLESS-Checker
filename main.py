@@ -250,11 +250,17 @@ async def dashboard(request: Request):
         node_count = session.exec(select(func.count(Node.id))).one()
         settings = session.exec(select(Settings)).first()
 
-        # Count valid proxies from all nodes (unique by raw_url where tests_passed > 0)
-        valid_proxy_count = session.exec(
-            select(func.count(func.distinct(NodeProxyResult.raw_url)))
+        # Count valid proxies by unique identity (deduplicates same proxy with different remarks)
+        valid_urls = session.exec(
+            select(NodeProxyResult.raw_url)
             .where(NodeProxyResult.tests_passed > 0)
-        ).one()
+        ).all()
+        valid_identities = set()
+        for row in valid_urls:
+            url = row[0] if isinstance(row, tuple) else row
+            if url:
+                valid_identities.add(get_proxy_identity(str(url)))
+        valid_proxy_count = len(valid_identities)
 
     return templates.TemplateResponse(request, "dashboard.html", {
         "user": user,
@@ -484,14 +490,22 @@ async def proxies_page(request: Request):
             .where(NodeProxyResult.tests_passed > 0)
         ).all()
 
-    # Aggregate across nodes
-    aggregated = {}
+    # Deduplicate: pick the best result per (identity, node_id) pair.
+    # Multiple raw_urls can map to the same identity (same proxy, different remarks).
+    best_per_node = {}  # key: (pid, node_id) -> best NodeProxyResult
     for r in all_results:
         pid = get_proxy_identity(r.raw_url)
+        key = (pid, r.node_id)
+        if key not in best_per_node or r.speed_score > best_per_node[key].speed_score:
+            best_per_node[key] = r
+
+    # Aggregate across unique nodes
+    aggregated = {}
+    for (pid, node_id), r in best_per_node.items():
         if pid not in aggregated:
             aggregated[pid] = {
                 "raw_url": r.raw_url,
-                "node_count": 0,
+                "node_ids": set(),
                 "total_tests_passed": 0,
                 "total_tests_total": 0,
                 "best_ping_ms": r.ping_ms,
@@ -503,7 +517,7 @@ async def proxies_page(request: Request):
                 "ul_sum": 0,
             }
         agg = aggregated[pid]
-        agg["node_count"] += 1
+        agg["node_ids"].add(node_id)
         agg["total_tests_passed"] += r.tests_passed
         agg["total_tests_total"] += r.tests_total
         agg["best_ping_ms"] = min(agg["best_ping_ms"], r.ping_ms)
@@ -516,19 +530,11 @@ async def proxies_page(request: Request):
     # Compute averages and sort
     proxy_list = []
     for agg in aggregated.values():
-        nc = agg["node_count"]
+        nc = len(agg["node_ids"])
+        agg["node_count"] = nc
         agg["avg_dl_kbps"] = agg["dl_sum"] // nc if nc else 0
         agg["avg_ul_kbps"] = agg["ul_sum"] // nc if nc else 0
-        # Ensure all required keys exist for template
-        agg.setdefault("raw_url", "")
-        agg.setdefault("node_count", 0)
-        agg.setdefault("total_tests_passed", 0)
-        agg.setdefault("total_tests_total", 0)
-        agg.setdefault("best_ping_ms", 0)
-        agg.setdefault("avg_dl_kbps", 0)
-        agg.setdefault("avg_ul_kbps", 0)
-        agg.setdefault("max_speed_score", 0)
-        agg.setdefault("last_tested", "")
+        del agg["node_ids"]  # Not needed in template
         proxy_list.append(agg)
     
     # Sort: most nodes -> highest speed -> lowest ping
@@ -1030,12 +1036,23 @@ async def webhook_output(secret_path: str):
             if not node:
                 raise HTTPException(status_code=404)
 
-            proxies = session.exec(
+            all_node_proxies = session.exec(
                 select(NodeProxyResult)
                 .where(NodeProxyResult.node_id == node_id)
                 .where(NodeProxyResult.tests_passed > 0)
-                .order_by(NodeProxyResult.speed_score.desc(), NodeProxyResult.tests_passed.desc(), NodeProxyResult.ping_ms)
             ).all()
+
+            # Deduplicate by proxy identity, keep best result
+            best_by_pid = {}
+            for p in all_node_proxies:
+                pid = get_proxy_identity(p.raw_url)
+                if pid not in best_by_pid or p.speed_score > best_by_pid[pid].speed_score:
+                    best_by_pid[pid] = p
+
+            proxies = sorted(
+                best_by_pid.values(),
+                key=lambda x: (-x.speed_score, -x.tests_passed, x.ping_ms)
+            )
 
             if settings.webhook_max_proxies > 0:
                 proxies = proxies[:settings.webhook_max_proxies]
@@ -1048,25 +1065,31 @@ async def webhook_output(secret_path: str):
         # Global Consensus Webhook: {webhook_secret_path}/global
         global_prefix = f"{settings.webhook_secret_path}/global"
         if secret_path == global_prefix:
-            # Aggregate all node results
-            stats = defaultdict(lambda: {"passes": 0, "speed_scores": [], "dl_max": 0, "ul_max": 0, "link": ""})
-
+            # Deduplicate: best result per (identity, node) pair
             node_results = session.exec(select(NodeProxyResult)).all()
+            best_per_node = {}
             for np_r in node_results:
                 if np_r.tests_passed > 0:
                     pid = get_proxy_identity(np_r.raw_url)
-                    stats[pid]["link"] = np_r.raw_url  # Keep the latest
-                    stats[pid]["passes"] += 1
-                    stats[pid]["speed_scores"].append(np_r.speed_score)
-                    stats[pid]["dl_max"] = max(stats[pid]["dl_max"], np_r.download_speed_kbps)
-                    stats[pid]["ul_max"] = max(stats[pid]["ul_max"], np_r.upload_speed_kbps)
+                    key = (pid, np_r.node_id)
+                    if key not in best_per_node or np_r.speed_score > best_per_node[key].speed_score:
+                        best_per_node[key] = np_r
+
+            # Aggregate across unique nodes
+            stats = defaultdict(lambda: {"node_ids": set(), "speed_scores": [], "dl_max": 0, "ul_max": 0, "link": ""})
+            for (pid, node_id), np_r in best_per_node.items():
+                stats[pid]["link"] = np_r.raw_url
+                stats[pid]["node_ids"].add(node_id)
+                stats[pid]["speed_scores"].append(np_r.speed_score)
+                stats[pid]["dl_max"] = max(stats[pid]["dl_max"], np_r.download_speed_kbps)
+                stats[pid]["ul_max"] = max(stats[pid]["ul_max"], np_r.upload_speed_kbps)
 
             consensus_list = []
             for pid, data in stats.items():
                 avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
                 consensus_list.append({
                     "link": data["link"],
-                    "passes": data["passes"],
+                    "passes": len(data["node_ids"]),  # unique nodes, not duplicate rows
                     "avg_speed": avg_speed,
                     "dl": data["dl_max"],
                     "ul": data["ul_max"],
@@ -1087,15 +1110,22 @@ async def webhook_output(secret_path: str):
         if secret_path != settings.webhook_secret_path:
             raise HTTPException(status_code=404)
 
-        # Aggregate across nodes: pick best result per proxy
+        # Aggregate across nodes: pick best result per proxy identity
         all_results = session.exec(
             select(NodeProxyResult)
             .where(NodeProxyResult.tests_passed > 0)
         ).all()
 
-        best_by_url = {}
+        # Deduplicate: best result per (identity, node), then pick overall best
+        best_per_node = {}
         for r in all_results:
             pid = get_proxy_identity(r.raw_url)
+            key = (pid, r.node_id)
+            if key not in best_per_node or r.speed_score > best_per_node[key].speed_score:
+                best_per_node[key] = r
+
+        best_by_url = {}
+        for (pid, _), r in best_per_node.items():
             if pid not in best_by_url or r.speed_score > best_by_url[pid].speed_score:
                 best_by_url[pid] = r
 
