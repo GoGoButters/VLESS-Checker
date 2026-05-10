@@ -479,10 +479,19 @@ async def proxies_page(request: Request):
 
     with Session(engine) as session:
         # Aggregate: group by raw_url, sum passes, average ping/speed
-        all_results = session.exec(
-            select(NodeProxyResult)
-            .where(NodeProxyResult.tests_passed > 0)
+        # Only include results from online nodes to avoid stale/inflated counts
+        online_node_ids = session.exec(
+            select(Node.id).where(Node.is_online == True)
         ).all()
+        online_node_ids_set = set(online_node_ids)
+
+        if online_node_ids_set:
+            all_unfiltered = session.exec(
+                select(NodeProxyResult).where(NodeProxyResult.tests_passed > 0)
+            ).all()
+            all_results = [r for r in all_unfiltered if r.node_id in online_node_ids_set]
+        else:
+            all_results = []
 
     # Aggregate across nodes
     aggregated = {}

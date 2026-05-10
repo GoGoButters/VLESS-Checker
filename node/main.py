@@ -258,8 +258,15 @@ class NodeApp:
                 })
 
         # 5. Optional: Speed testing phase
+        from speed_tester import _measure_speed, _compute_speed_score
+
+        # Compute baseline speed_score for ALL tested results (even without speed tests)
+        for r in all_tested_results:
+            r["speed_score"] = _compute_speed_score(
+                r["ping_ms"], r["tests_passed"], r["download_speed_kbps"], r["upload_speed_kbps"]
+            )
+
         if speed_top_n > 0 and valid_proxies:
-            from speed_tester import _measure_speed, _compute_speed_score
             logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies (multi-stream)...")
 
             to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
