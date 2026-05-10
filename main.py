@@ -478,41 +478,67 @@ async def proxies_page(request: Request):
         return RedirectResponse("/login", status_code=302)
 
     with Session(engine) as session:
-        # Mark nodes as offline if no heartbeat in last 5 minutes
+        # --- Diagnostic: count everything before cleanup ---
+        total_nodes = session.exec(select(func.count(Node.id))).one()
+        total_npr = session.exec(select(func.count(NodeProxyResult.id))).one()
+
+        # Mark nodes as offline if no heartbeat in last 5 minutes.
+        # Use Python filter (not SQL WHERE) because SQLite NULL < 'string'
+        # evaluates to NULL and silently excludes the row from results.
         stale_threshold = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-        stale_nodes = session.exec(
-            select(Node).where(
-                Node.is_online == True,
-                Node.last_heartbeat < stale_threshold,
-            )
-        ).all()
+        all_nodes = session.exec(select(Node)).all()
+        stale_nodes = [
+            n for n in all_nodes
+            if n.is_online and (not n.last_heartbeat or n.last_heartbeat < stale_threshold)
+        ]
         for node in stale_nodes:
             node.is_online = False
-            logger.info(f"Marked node {node.id} ({node.name}) as offline (no heartbeat since {node.last_heartbeat})")
+            logger.info(f"Marked node {node.id} ({node.name}) as offline "
+                        f"(last_heartbeat={node.last_heartbeat or 'NULL'})")
         if stale_nodes:
             session.commit()
 
         # Clean up NodeProxyResult rows belonging to offline nodes
-        offline_ids = session.exec(
-            select(Node.id).where(Node.is_online == False)
-        ).all()
-        offline_ids_clean = [row[0] if isinstance(row, tuple) else row for row in offline_ids]
-        if offline_ids_clean:
+        offline_ids = [n.id for n in all_nodes if not n.is_online]
+        if offline_ids:
             session.exec(
-                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids_clean))
+                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids))
             )
             session.commit()
-            logger.info(f"Cleaned up stale NodeProxyResult rows from {len(offline_ids_clean)} offline nodes")
+            logger.info(f"Cleaned up stale NodeProxyResult rows from {len(offline_ids)} offline nodes")
+
+        # Clean up orphan NodeProxyResult rows (node_id not in nodes table at all)
+        all_node_ids = {n.id for n in all_nodes}
+        orphan_rows = session.exec(
+            select(NodeProxyResult.node_id).distinct()
+        ).all()
+        orphan_ids = [
+            row[0] if isinstance(row, tuple) else row
+            for row in orphan_rows
+            if (row[0] if isinstance(row, tuple) else row) not in all_node_ids
+        ]
+        if orphan_ids:
+            session.exec(
+                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(orphan_ids))
+            )
+            session.commit()
+            logger.info(f"Cleaned up NodeProxyResult rows from {len(orphan_ids)} "
+                        f"orphan node_ids (node no longer exists)")
+
+        # --- Diagnostic: count after cleanup ---
+        online_ids = [n.id for n in all_nodes if n.is_online]
+        recent_online = [
+            n for n in all_nodes
+            if n.is_online and n.last_heartbeat and n.last_heartbeat >= stale_threshold
+        ]
+        remaining_npr = session.exec(select(func.count(NodeProxyResult.id))).one()
+        logger.info(f"/proxies diag: total_nodes={total_nodes} online={len(online_ids)} "
+                    f"recent_heartbeat={len(recent_online)} stale_marked={len(stale_nodes)} "
+                    f"orphan_cleaned={len(orphan_ids)} npr_before={total_npr} npr_after={remaining_npr}")
 
         # Aggregate: group by raw_url, sum passes, average ping/speed
         # Only include results from online nodes to avoid stale/inflated counts
-        online_node_ids = session.exec(
-            select(Node.id).where(Node.is_online == True)
-        ).all()
-        # Unwrap tuples if SQLModel returns them
-        online_node_ids_set = set(
-            row[0] if isinstance(row, tuple) else row for row in online_node_ids
-        )
+        online_node_ids_set = set(online_ids)
 
         if online_node_ids_set:
             all_unfiltered = session.exec(
