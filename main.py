@@ -478,12 +478,41 @@ async def proxies_page(request: Request):
         return RedirectResponse("/login", status_code=302)
 
     with Session(engine) as session:
+        # Mark nodes as offline if no heartbeat in last 5 minutes
+        stale_threshold = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        stale_nodes = session.exec(
+            select(Node).where(
+                Node.is_online == True,
+                Node.last_heartbeat < stale_threshold,
+            )
+        ).all()
+        for node in stale_nodes:
+            node.is_online = False
+            logger.info(f"Marked node {node.id} ({node.name}) as offline (no heartbeat since {node.last_heartbeat})")
+        if stale_nodes:
+            session.commit()
+
+        # Clean up NodeProxyResult rows belonging to offline nodes
+        offline_ids = session.exec(
+            select(Node.id).where(Node.is_online == False)
+        ).all()
+        offline_ids_clean = [row[0] if isinstance(row, tuple) else row for row in offline_ids]
+        if offline_ids_clean:
+            session.exec(
+                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids_clean))
+            )
+            session.commit()
+            logger.info(f"Cleaned up stale NodeProxyResult rows from {len(offline_ids_clean)} offline nodes")
+
         # Aggregate: group by raw_url, sum passes, average ping/speed
         # Only include results from online nodes to avoid stale/inflated counts
         online_node_ids = session.exec(
             select(Node.id).where(Node.is_online == True)
         ).all()
-        online_node_ids_set = set(online_node_ids)
+        # Unwrap tuples if SQLModel returns them
+        online_node_ids_set = set(
+            row[0] if isinstance(row, tuple) else row for row in online_node_ids
+        )
 
         if online_node_ids_set:
             all_unfiltered = session.exec(
@@ -939,12 +968,14 @@ async def _background_fetch():
         # Pass session to update last_config_count
         with Session(engine) as session:
             proxy_links = await fetch_and_parse_subscriptions(session)
-            new_set = set(proxy_links)
+            # Compare by identity key (URL minus #remark) so configs with different
+            # names aren't treated as missing and re-added as duplicates
+            new_keys = {url.split("#", 1)[0] for url in proxy_links}
 
             # Add good proxies that disappeared from subscriptions
             added_count = 0
             for p in good_proxies:
-                if p not in new_set:
+                if p.split("#", 1)[0] not in new_keys:
                     proxy_links.append(p)
                     added_count += 1
 

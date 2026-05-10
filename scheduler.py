@@ -90,12 +90,14 @@ async def _scheduler_loop():
             # Pass session to update last_config_count and skip disabled
             with Session(engine) as session:
                 proxy_links = await fetch_and_parse_subscriptions(session)
-                new_set = set(proxy_links)
+                # Compare by identity key (URL minus #remark) so configs with different
+                # names aren't treated as missing and re-added as duplicates
+                new_keys = {url.split("#", 1)[0] for url in proxy_links}
                 
                 # Add good proxies that disappeared from subscriptions
                 added_count = 0
                 for p in good_proxies:
-                    if p not in new_set:
+                    if p.split("#", 1)[0] not in new_keys:
                         proxy_links.append(p)
                         added_count += 1
                 

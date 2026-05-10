@@ -24,6 +24,13 @@ def _decode_base64(data: str) -> str:
         return ""
 
 
+def _strip_remark(url: str) -> str:
+    """Return URL identity by stripping the #fragment (remark/name).
+    Two configs that differ only in their #remark are considered duplicates.
+    """
+    return url.split("#", 1)[0]
+
+
 def _extract_proxy_links(text: str) -> list[str]:
     """Extract all supported proxy links from text."""
     links = []
@@ -120,7 +127,17 @@ async def fetch_and_parse_subscriptions(session=None) -> list[str]:
         session.add_all(subs)
         session.commit()
 
-    # Deduplicate
-    unique = list(dict.fromkeys(all_proxies))
+    # Deduplicate by identity key (URL minus #remark)
+    seen: dict[str, str] = {}
+    duplicates_skipped = 0
+    for url in all_proxies:
+        key = _strip_remark(url)
+        if key not in seen:
+            seen[key] = url
+        else:
+            duplicates_skipped += 1
+    unique = list(seen.values())
+    if duplicates_skipped > 0:
+        logger.info(f"Deduplication: skipped {duplicates_skipped} duplicate configs (same config, different #remark)")
     logger.info(f"Total unique proxy links: {len(unique)}")
     return unique
