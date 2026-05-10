@@ -69,10 +69,9 @@ async def _scheduler_loop():
 
             # Run the fetch pipeline
             logger.info("Scheduler: starting scheduled subscription fetch")
-            
+
             # Get good proxies from previous tests (tests_passed >0)
             with Session(engine) as session:
-
                 good_results = session.exec(
                     select(NodeProxyResult.raw_url)
                     .where(NodeProxyResult.tests_passed >0)
@@ -86,32 +85,66 @@ async def _scheduler_loop():
                     if url:
                         good_proxies.append(str(url))
                 logger.info(f"Scheduler: found {len(good_proxies)} good proxies from previous tests")
-            
+
+                # Read retention settings and existing RawProxy retention state
+                settings = session.exec(select(Settings)).first()
+                retention_limit = settings.good_proxy_retention_cycles if settings else 3
+
+                if retention_limit > 0:
+                    existing_rp = session.exec(select(RawProxy)).all()
+                    old_retention: dict[str, int] = {}
+                    for rp in existing_rp:
+                        key = rp.raw_url.split("#", 1)[0]
+                        old_retention[key] = rp.retention_cycles
+                else:
+                    old_retention = {}
+
             # Pass session to update last_config_count and skip disabled
             with Session(engine) as session:
                 proxy_links = await fetch_and_parse_subscriptions(session)
-                # Compare by identity key (URL minus #remark) so configs with different
-                # names aren't treated as missing and re-added as duplicates
+                # Compare by identity key (URL minus #remark)
                 new_keys = {url.split("#", 1)[0] for url in proxy_links}
-                
-                # Add good proxies that disappeared from subscriptions
-                added_count = 0
-                for p in good_proxies:
-                    if p.split("#", 1)[0] not in new_keys:
-                        proxy_links.append(p)
-                        added_count += 1
-                
-                if added_count >0:
-                    logger.info(f"Scheduler: added {added_count} good proxies that disappeared from subscriptions")
-                
-                if proxy_links:
+
+                # Build final proxy set with retention tracking
+                # key → (full_url, retention_cycles)
+                final_proxies: dict[str, tuple[str, int]] = {}
+
+                # 1. Fresh subscriptions: retention_cycles = 0 (reset)
+                for url in proxy_links:
+                    key = url.split("#", 1)[0]
+                    final_proxies[key] = (url, 0)
+
+                # 2. Good proxies NOT in fresh subscriptions: increment retention
+                if retention_limit > 0:
+                    added_count = 0
+                    expired_count = 0
+                    for p in good_proxies:
+                        key = p.split("#", 1)[0]
+                        if key not in final_proxies:
+                            prev = old_retention.get(key, 0)
+                            new_cycles = prev + 1
+                            if new_cycles <= retention_limit:
+                                final_proxies[key] = (p, new_cycles)
+                                added_count += 1
+                            else:
+                                expired_count += 1
+                    if added_count > 0:
+                        logger.info(f"Scheduler: retained {added_count} good proxies "
+                                    f"(not in subscriptions, within {retention_limit}-cycle limit)")
+                    if expired_count > 0:
+                        logger.info(f"Scheduler: expired {expired_count} proxies "
+                                    f"(exceeded {retention_limit}-cycle retention limit)")
+                else:
+                    logger.info("Scheduler: proxy retention disabled (good_proxy_retention_cycles=0)")
+
+                if final_proxies:
                     session.exec(delete(RawProxy))
                     # Filter out any non-string or single-char entries
-                    valid_links = [url for url in proxy_links if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://'))]
-                    for url in valid_links:
-                        session.add(RawProxy(raw_url=url))
+                    for key, (url, cycles) in final_proxies.items():
+                        if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://')):
+                            session.add(RawProxy(raw_url=url, retention_cycles=cycles))
                     session.commit()
-                    logger.info(f"Scheduler: fetched {len(valid_links)} proxies for workers")
+                    logger.info(f"Scheduler: stored {len(final_proxies)} proxies for workers")
                 else:
                     logger.warning("Scheduler: no proxy links found from subscriptions")
 

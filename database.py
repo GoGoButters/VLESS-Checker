@@ -46,6 +46,8 @@ class RawProxy(SQLModel, table=True):
 
     consecutive_failures: int = Field(default=0)  # Consecutive check cycles failed on ALL workers
 
+    retention_cycles: int = Field(default=0)  # How many cycles this proxy has been retained after disappearing from subscriptions
+
 
 class TestUrl(SQLModel, table=True):
     """User-configurable URLs to check proxies against."""
@@ -98,6 +100,9 @@ class Settings(SQLModel, table=True):
     ban_duration_hours: int = Field(default=168)  # 7 days = 168 hours, 0 = disabled
 
     ban_after_n_failures: int = Field(default=3)  # Ban after N consecutive failures on ALL workers
+
+    # Proxy retention: remember tested proxies for N cycles after they disappear from subscriptions
+    good_proxy_retention_cycles: int = Field(default=3)  # 0 = disable retention
 
 
 class Node(SQLModel, table=True):
@@ -163,6 +168,7 @@ def _migrate_db():
             ("ban_duration_hours", "INTEGER DEFAULT 168"),
 
             ("ban_after_n_failures", "INTEGER DEFAULT 3"),
+            ("good_proxy_retention_cycles", "INTEGER DEFAULT 3"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
@@ -184,6 +190,9 @@ def _migrate_db():
 
         if "consecutive_failures" not in raw_existing:
             conn.execute("ALTER TABLE raw_proxies ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
+
+        if "retention_cycles" not in raw_existing:
+            conn.execute("ALTER TABLE raw_proxies ADD COLUMN retention_cycles INTEGER DEFAULT 0")
         
         conn.commit()
         conn.close()

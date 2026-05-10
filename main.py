@@ -419,6 +419,7 @@ async def settings_save(
     ban_duration_hours: int = Form(168),
 
     ban_after_n_failures: int = Form(3),
+    good_proxy_retention_cycles: int = Form(3),
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -442,6 +443,7 @@ async def settings_save(
 
             settings.ban_duration_hours = max(0, ban_duration_hours)
             settings.ban_after_n_failures = max(1, ban_after_n_failures)
+            settings.good_proxy_retention_cycles = max(0, good_proxy_retention_cycles)
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
@@ -966,7 +968,8 @@ async def fetch_subs(request: Request):
 
 async def _background_fetch():
     """Background task: fetch subscriptions and store raw proxies.
-    Also preserves 'good' proxies that passed previous tests but disappeared from sources."""
+    Also preserves 'good' proxies that passed previous tests but disappeared from sources,
+    subject to good_proxy_retention_cycles limit."""
     try:
         fetch_status["running"] = True
         fetch_status["current_phase"] = "fetching"
@@ -991,38 +994,72 @@ async def _background_fetch():
                     good_proxies.append(str(url))
             logger.info(f"Found {len(good_proxies)} good proxies from previous tests")
 
+            # Read retention settings and existing RawProxy retention state
+            settings = session.exec(select(Settings)).first()
+            retention_limit = settings.good_proxy_retention_cycles if settings else 3
+
+            if retention_limit > 0:
+                existing_rp = session.exec(select(RawProxy)).all()
+                old_retention: dict[str, int] = {}
+                for rp in existing_rp:
+                    key = rp.raw_url.split("#", 1)[0]
+                    old_retention[key] = rp.retention_cycles
+            else:
+                old_retention = {}
+
         # Pass session to update last_config_count
         with Session(engine) as session:
             proxy_links = await fetch_and_parse_subscriptions(session)
-            # Compare by identity key (URL minus #remark) so configs with different
-            # names aren't treated as missing and re-added as duplicates
+            # Compare by identity key (URL minus #remark)
             new_keys = {url.split("#", 1)[0] for url in proxy_links}
 
-            # Add good proxies that disappeared from subscriptions
-            added_count = 0
-            for p in good_proxies:
-                if p.split("#", 1)[0] not in new_keys:
-                    proxy_links.append(p)
-                    added_count += 1
+            # Build final proxy set with retention tracking
+            # key → (full_url, retention_cycles)
+            final_proxies: dict[str, tuple[str, int]] = {}
 
-            if added_count > 0:
-                logger.info(f"Added {added_count} good proxies that disappeared from subscriptions")
+            # 1. Fresh subscriptions: retention_cycles = 0 (reset)
+            for url in proxy_links:
+                key = url.split("#", 1)[0]
+                final_proxies[key] = (url, 0)
+
+            # 2. Good proxies NOT in fresh subscriptions: increment retention
+            if retention_limit > 0:
+                added_count = 0
+                expired_count = 0
+                for p in good_proxies:
+                    key = p.split("#", 1)[0]
+                    if key not in final_proxies:
+                        prev = old_retention.get(key, 0)
+                        new_cycles = prev + 1
+                        if new_cycles <= retention_limit:
+                            final_proxies[key] = (p, new_cycles)
+                            added_count += 1
+                        else:
+                            expired_count += 1
+                if added_count > 0:
+                    logger.info(f"Retained {added_count} good proxies "
+                                f"(not in subscriptions, within {retention_limit}-cycle limit)")
+                if expired_count > 0:
+                    logger.info(f"Expired {expired_count} proxies "
+                                f"(exceeded {retention_limit}-cycle retention limit)")
+            else:
+                logger.info("Proxy retention disabled (good_proxy_retention_cycles=0)")
 
             fetch_status["current_phase"] = "saving"
-            fetch_status["fetched_proxies"] = len(proxy_links)
+            fetch_status["fetched_proxies"] = len(final_proxies)
 
-            # Store raw proxies
-            session.exec(delete(RawProxy))
-            # Filter out any non-string or single-char entries
-            valid_links = [url for url in proxy_links if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://'))]
-            for url in valid_links:
-                session.add(RawProxy(raw_url=url))
-            session.commit()
+            # Store raw proxies with retention_cycles
+            if final_proxies:
+                session.exec(delete(RawProxy))
+                for key, (url, cycles) in final_proxies.items():
+                    if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://')):
+                        session.add(RawProxy(raw_url=url, retention_cycles=cycles))
+                session.commit()
 
         fetch_status["current_phase"] = "done"
         fetch_status["running"] = False
         fetch_status["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
-        logger.info(f"Subscription fetch complete: {len(proxy_links)} unique proxies stored for workers")
+        logger.info(f"Subscription fetch complete: {len(final_proxies)} unique proxies stored for workers")
 
     except Exception as e:
         logger.error(f"Fetch pipeline error: {e}", exc_info=True)
