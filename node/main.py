@@ -101,24 +101,50 @@ class NodeApp:
         return max(0, remaining)
 
     async def register(self) -> bool:
-        try:
-            payload = {
-                "name": config.node_name,
-                "region": config.node_region
-            }
-            logger.info(f"Registering with master at {self.master_url}...")
-            resp = await self.http_client.post(f"{self.master_url}/api/node/register", json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                self.node_id = data.get("node_id")
-                logger.info(f"Registered successfully! Node ID: {self.node_id}")
-                return True
-            else:
-                logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
+        """Register with master, with exponential backoff retry on connection errors."""
+        import httpx
+        
+        max_retries = 3
+        base_delay = 2.0  # seconds
+        
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                payload = {
+                    "name": config.node_name,
+                    "region": config.node_region
+                }
+                if attempt == 0:
+                    logger.info(f"Registering with master at {self.master_url}...")
+                else:
+                    logger.info(f"Register attempt {attempt + 1}/{max_retries}...")
+                
+                resp = await self.http_client.post(f"{self.master_url}/api/node/register", json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.node_id = data.get("node_id")
+                    logger.info(f"Registered successfully! Node ID: {self.node_id}")
+                    return True
+                else:
+                    logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
+                    # Non-connection errors - don't retry
+                    return False
+                    
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
+                last_error = e
+                logger.warning(f"Connection error on attempt {attempt + 1}/{max_retries}: {repr(e)}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # 2, 4, 8 seconds
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    await asyncio.sleep(delay)
+            except Exception as e:
+                last_error = e
+                logger.error(f"Error registering node: {repr(e)}")
+                # Other errors - don't retry
                 return False
-        except Exception as e:
-            logger.error(f"Error registering node: {repr(e)}")
-            return False
+        
+        logger.error(f"Failed to register after {max_retries} attempts: {repr(last_error)}")
+        return False
 
     async def get_test_config(self):
         try:

@@ -1247,11 +1247,13 @@ def _compute_webhook_averages(
         if nc == 0:
             continue
         rows = list(agg["node_best"].values())
+        node_ids = list(agg["node_best"].keys())
         out[pid] = {
             "raw_url": max(rows, key=lambda r: r.speed_score).raw_url,
             "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
             "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
             "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
+            "node_ids": node_ids,
         }
     return out
 
@@ -1270,14 +1272,34 @@ def _apply_webhook_filters(proxy_urls: list[str], speeds: dict, settings) -> lis
     min_ul = settings.webhook_min_ul_kbps or 0
     prefix = (settings.webhook_rename_prefix or "").strip()
 
+    # DEBUG: log filter thresholds and input count
+    if min_dl > 0 or min_ul > 0:
+        logger.debug(
+            f"Webhook filter: min_dl={min_dl} KB/s, min_ul={min_ul} KB/s, "
+            f"input_count={len(proxy_urls)}"
+        )
+
     filtered = []
+    filtered_dl_fail = 0
+    filtered_ul_fail = 0
     for url in proxy_urls:
         sp = speeds.get(url, {"dl": 0, "ul": 0})
         if min_dl > 0 and sp["dl"] < min_dl:
+            filtered_dl_fail += 1
             continue
         if min_ul > 0 and sp["ul"] < min_ul:
+            filtered_ul_fail += 1
             continue
         filtered.append(url)
+
+    # DEBUG: log filter results
+    if min_dl > 0 or min_ul > 0:
+        total_filtered = filtered_dl_fail + filtered_ul_fail
+        logger.info(
+            f"Webhook filter: filtered {total_filtered}/{len(proxy_urls)} proxies "
+            f"(dl_fail={filtered_dl_fail}, ul_fail={filtered_ul_fail}), "
+            f"passed={len(filtered)}"
+        )
 
     # Rename if prefix is set
     if prefix:
@@ -1326,14 +1348,48 @@ async def webhook_output(secret_path: str):
         # Global Consensus Webhook: {webhook_secret_path}/global
         global_prefix = f"{settings.webhook_secret_path}/global"
         if secret_path == global_prefix:
-            # Aggregate all node results using per-node-best averaging
-            node_results = session.exec(select(NodeProxyResult)).all()
+            # Cleanup stale node data and get online node IDs
+            cleanup_stats = _cleanup_stale_node_data(session)
+            online_ids = cleanup_stats.get("online_ids", [])
+            
+            if not online_ids:
+                logger.warning("Global webhook: no online nodes, returning empty list")
+                return PlainTextResponse("", media_type="text/plain; charset=utf-8")
+            
+            online_ids_set = set(online_ids)
+            
+            # Filter node results to only include online nodes
+            node_results = session.exec(
+                select(NodeProxyResult)
+                .where(NodeProxyResult.tests_passed > 0)
+                .where(NodeProxyResult.node_id.in_(online_ids_set))
+            ).all()
+            
             avg_data = _compute_webhook_averages(node_results)
 
-            # Sort by avg_score descending, then by node_count (passes) as tiebreaker
+            # Apply speed filters BEFORE sorting and limiting
+            # Build speeds dict for filtering
+            all_urls = list(avg_data.keys())
+            speeds_for_filter = {
+                avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]}
+                for pid in all_urls
+            }
+            filtered_pids = set()
+            for pid in all_urls:
+                url = avg_data[pid]["raw_url"]
+                sp = speeds_for_filter[url]
+                min_dl = settings.webhook_min_dl_kbps or 0
+                min_ul = settings.webhook_min_ul_kbps or 0
+                if (min_dl == 0 or sp["dl"] >= min_dl) and (min_ul == 0 or sp["ul"] >= min_ul):
+                    filtered_pids.add(pid)
+            
+            # Now filter the data to only include proxies that passed speed filters
+            filtered_data = {pid: avg_data[pid] for pid in filtered_pids}
+            
+            # Sort by avg_score descending, then by node_count as tiebreaker
             sorted_ids = sorted(
-                avg_data.keys(),
-                key=lambda pid: (avg_data[pid]["avg_score"], len(avg_data[pid]["node_ids"]) if "node_ids" in avg_data[pid] else 0),
+                filtered_data.keys(),
+                key=lambda pid: (filtered_data[pid]["avg_score"], len(filtered_data[pid]["node_ids"])),
                 reverse=True
             )
 
@@ -1341,8 +1397,8 @@ async def webhook_output(secret_path: str):
             if top_n > 0:
                 sorted_ids = sorted_ids[:top_n]
 
-            urls = [avg_data[pid]["raw_url"] for pid in sorted_ids]
-            speeds = {avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]} for pid in sorted_ids}
+            urls = [filtered_data[pid]["raw_url"] for pid in sorted_ids]
+            speeds = {filtered_data[pid]["raw_url"]: {"dl": filtered_data[pid]["avg_dl"], "ul": filtered_data[pid]["avg_ul"]} for pid in sorted_ids}
             lines = _apply_webhook_filters(urls, speeds, settings)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
@@ -1350,22 +1406,51 @@ async def webhook_output(secret_path: str):
         if secret_path != settings.webhook_secret_path:
             raise HTTPException(status_code=404)
 
+        # Cleanup stale node data and get online node IDs
+        cleanup_stats = _cleanup_stale_node_data(session)
+        online_ids = cleanup_stats.get("online_ids", [])
+        
+        if not online_ids:
+            logger.warning("Main webhook: no online nodes, returning empty list")
+            return PlainTextResponse("", media_type="text/plain; charset=utf-8")
+        
+        online_ids_set = set(online_ids)
+
         # Aggregate across nodes: use per-node-best averaging for speeds
+        # Filter to only online nodes
         all_results = session.exec(
             select(NodeProxyResult)
             .where(NodeProxyResult.tests_passed > 0)
+            .where(NodeProxyResult.node_id.in_(online_ids_set))
         ).all()
 
         avg_data = _compute_webhook_averages(all_results)
 
+        # Apply speed filters BEFORE sorting and limiting
+        all_urls = list(avg_data.keys())
+        speeds_for_filter = {
+            avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]}
+            for pid in all_urls
+        }
+        filtered_pids = set()
+        for pid in all_urls:
+            url = avg_data[pid]["raw_url"]
+            sp = speeds_for_filter[url]
+            min_dl = settings.webhook_min_dl_kbps or 0
+            min_ul = settings.webhook_min_ul_kbps or 0
+            if (min_dl == 0 or sp["dl"] >= min_dl) and (min_ul == 0 or sp["ul"] >= min_ul):
+                filtered_pids.add(pid)
+        
+        filtered_data = {pid: avg_data[pid] for pid in filtered_pids}
+
         # Sort by avg_score descending
-        sorted_ids = sorted(avg_data.keys(), key=lambda pid: -avg_data[pid]["avg_score"])
+        sorted_ids = sorted(filtered_data.keys(), key=lambda pid: -filtered_data[pid]["avg_score"])
 
         if settings.webhook_max_proxies > 0:
             sorted_ids = sorted_ids[:settings.webhook_max_proxies]
 
-    urls = [avg_data[pid]["raw_url"] for pid in sorted_ids]
-    speeds = {avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]} for pid in sorted_ids}
+    urls = [filtered_data[pid]["raw_url"] for pid in sorted_ids]
+    speeds = {filtered_data[pid]["raw_url"]: {"dl": filtered_data[pid]["avg_dl"], "ul": filtered_data[pid]["avg_ul"]} for pid in sorted_ids}
     lines = _apply_webhook_filters(urls, speeds, settings)
 
     text = "\n".join(lines)
