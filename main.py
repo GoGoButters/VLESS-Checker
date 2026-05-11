@@ -1108,6 +1108,10 @@ async def fetch_subs(request: Request):
     if fetch_status["running"]:
         return RedirectResponse("/", status_code=302)
 
+    # Set status BEFORE scheduling the task so the redirect renders with correct state
+    fetch_status["running"] = True
+    fetch_status["current_phase"] = "starting"
+
     task = asyncio.create_task(_background_fetch())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -1115,11 +1119,7 @@ async def fetch_subs(request: Request):
 
 
 async def _background_fetch():
-    """Background task: fetch subscriptions and store raw proxies.
-    Also preserves 'good' proxies that passed previous tests but disappeared from sources,
-    subject to good_proxy_retention_cycles limit."""
     try:
-        fetch_status["running"] = True
         fetch_status["current_phase"] = "fetching"
         fetch_status["fetched_proxies"] = 0
 
@@ -1205,14 +1205,14 @@ async def _background_fetch():
                 session.commit()
 
         fetch_status["current_phase"] = "done"
-        fetch_status["running"] = False
         fetch_status["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
         logger.info(f"Subscription fetch complete: {len(final_proxies)} unique proxies stored for workers")
 
     except Exception as e:
         logger.error(f"Fetch pipeline error: {e}", exc_info=True)
-        fetch_status["running"] = False
         fetch_status["current_phase"] = "error"
+    finally:
+        fetch_status["running"] = False
 
 
 # ---------------------------------------------------------------------------

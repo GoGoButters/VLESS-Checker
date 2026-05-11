@@ -265,6 +265,12 @@
                     btn.classList.remove('opacity-50', 'cursor-not-allowed');
                     if (data.current_phase === 'done') {
                         bar.style.width = '100%';
+                        // Fetch completed — reload to refresh stats cards
+                        setTimeout(() => window.location.reload(), 1500);
+                    }
+                    if (data.current_phase === 'error') {
+                        bar.style.width = '0%';
+                        section.classList.add('hidden');
                     }
                 }
 
