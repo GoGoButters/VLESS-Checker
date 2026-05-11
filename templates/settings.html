@@ -107,6 +107,15 @@
                     placeholder="{{ t(request, 'settings_rename_placeholder', default='e.g. MyVPN — leave empty for original names') }}">
                 <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_rename_prefix_desc', default='If set, configs will be renamed to PREFIX - 1, PREFIX - 2, etc. Leave empty for original names.') }}</p>
             </div>
+            <div class="mt-4">
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" name="webhook_consensus_only" value="1"
+                        {% if settings.webhook_consensus_only %}checked{% endif %}
+                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-800">
+                    <span class="text-sm text-white">Consensus-only mode</span>
+                </label>
+                <p class="text-xs text-slate-500 mt-1 ml-8">Return only proxies confirmed by ALL online nodes. Speed filters apply to this subset.</p>
+            </div>
         </div>
     </div>
 

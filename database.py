@@ -91,6 +91,7 @@ class Settings(SQLModel, table=True):
     webhook_min_dl_kbps: int = Field(default=0)   # min download speed (KB/s), 0 = no filter
     webhook_min_ul_kbps: int = Field(default=0)   # min upload speed (KB/s), 0 = no filter
     webhook_rename_prefix: str = Field(default="")  # optional rename prefix for configs
+    webhook_consensus_only: bool = Field(default=False)  # if True, return only proxies confirmed by ALL online nodes
 
     # Global Consensus settings
     global_sub_min_nodes: int = Field(default=1)
@@ -165,6 +166,7 @@ def _migrate_db():
             ("webhook_min_dl_kbps", "INTEGER DEFAULT 0"),
             ("webhook_min_ul_kbps", "INTEGER DEFAULT 0"),
             ("webhook_rename_prefix", "TEXT DEFAULT ''"),
+            ("webhook_consensus_only", "INTEGER DEFAULT 0"),
             ("ban_duration_hours", "INTEGER DEFAULT 168"),
 
             ("ban_after_n_failures", "INTEGER DEFAULT 3"),

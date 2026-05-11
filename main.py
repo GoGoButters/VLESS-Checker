@@ -429,6 +429,7 @@ async def settings_save(
     webhook_min_dl_kbps: int = Form(0),
     webhook_min_ul_kbps: int = Form(0),
     webhook_rename_prefix: str = Form(""),
+    webhook_consensus_only: int = Form(0),
     ban_duration_hours: int = Form(168),
 
     ban_after_n_failures: int = Form(3),
@@ -453,6 +454,7 @@ async def settings_save(
             settings.webhook_min_dl_kbps = max(0, webhook_min_dl_kbps)
             settings.webhook_min_ul_kbps = max(0, webhook_min_ul_kbps)
             settings.webhook_rename_prefix = webhook_rename_prefix.strip()
+            settings.webhook_consensus_only = bool(webhook_consensus_only)
 
             settings.ban_duration_hours = max(0, ban_duration_hours)
             settings.ban_after_n_failures = max(1, ban_after_n_failures)
@@ -1303,6 +1305,19 @@ async def webhook_output(secret_path: str):
         
         # Aggregate: best result per (identity, node_id), then compute averages
         avg_data = _compute_webhook_averages(all_results)
+        
+        # Consensus-only filter: return only proxies confirmed by ALL online nodes
+        total_nodes = len(online_ids)
+        if settings.webhook_consensus_only:
+            consensus_data = {}
+            for pid, d in avg_data.items():
+                if len(d["node_ids"]) == total_nodes:
+                    consensus_data[pid] = d
+            logger.info(
+                f"Webhook: consensus filter: {len(avg_data)} → {len(consensus_data)} "
+                f"(confirmed by all {total_nodes} nodes)"
+            )
+            avg_data = consensus_data
         
         # Apply speed filters BEFORE sorting and limiting
         min_dl = settings.webhook_min_dl_kbps or 0

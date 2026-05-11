@@ -174,21 +174,9 @@
                 {{ t(request, 'dash_copy', default='Copy') }}
             </button>
         </div>
-
-        <!-- Global consensus -->
-        <div class="flex items-center gap-3">
-            <span class="text-xs font-semibold text-emerald-400 w-16 flex-shrink-0">{{ t(request, 'dash_global_hook', default='Global') }}</span>
-            <code id="global-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-emerald-400 text-sm font-mono truncate">
-                {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}/global
-            </code>
-            <button id="btn-copy-global" onclick="copyToClipboard('global-url', this)"
-                class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-emerald-500/20 text-slate-300 hover:text-white hover:border-emerald-500/30 transition-all text-xs">
-                {{ t(request, 'dash_copy', default='Copy') }}
-            </button>
-        </div>
     </div>
 
-    <p class="text-xs text-slate-500 mt-4">{{ t(request, 'dash_hook_desc', default='Main — best proxies by speed. Global — ranked by number of confirming nodes.') }}</p>
+    <p class="text-xs text-slate-500 mt-4">Ranked by number of confirming nodes (desc), then by speed score (desc).</p>
 
     <script>
     function copyToClipboard(elementId, btn) {
