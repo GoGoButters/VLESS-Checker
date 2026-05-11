@@ -485,6 +485,21 @@ async def regenerate_node_token(request: Request):
 # ---------------------------------------------------------------------------
 # VALID PROXIES page (aggregated from all nodes)
 # ---------------------------------------------------------------------------
+@app.post("/proxies/clear-rating")
+async def clear_rating(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+
+    with Session(engine) as session:
+        session.exec(delete(NodeProxyResult))
+        session.exec(delete(Node))
+        session.commit()
+
+    logger.info("Rating cleared: all NodeProxyResult and Node rows deleted")
+    return RedirectResponse("/proxies", status_code=302)
+
+
 @app.get("/proxies", response_class=HTMLResponse)
 async def proxies_page(request: Request):
     user = get_current_user(request)

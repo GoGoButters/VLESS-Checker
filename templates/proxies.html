@@ -7,6 +7,14 @@
         <h1 class="text-3xl font-bold text-white">Proxies</h1>
         <p class="text-slate-400 mt-1">Aggregated results from all worker nodes</p>
     </div>
+    <form method="POST" action="/proxies/clear-rating"
+          onsubmit="return confirm('Clear ALL rating data? Nodes will re-register on next cycle.')">
+        <button type="submit"
+                class="px-4 py-2 rounded-lg bg-rose-500/10 text-rose-400 text-sm font-semibold
+                       border border-rose-500/20 hover:bg-rose-500/20 transition">
+            Clear Rating
+        </button>
+    </form>
 </div>
 
 <div class="glass rounded-2xl overflow-hidden">
