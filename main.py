@@ -19,6 +19,7 @@ from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, func, delete
+from sqlalchemy import text
 
 from database import (
     create_db_and_tables,
@@ -494,6 +495,7 @@ async def clear_rating(request: Request):
     with Session(engine) as session:
         session.exec(delete(NodeProxyResult))
         session.exec(delete(Node))
+        session.exec(text("DELETE FROM sqlite_sequence WHERE name IN ('nodeproxyresult', 'node')"))
         session.commit()
 
     logger.info("Rating cleared: all NodeProxyResult and Node rows deleted")
@@ -529,55 +531,55 @@ async def proxies_page(request: Request):
         else:
             all_results = []
 
-    # --- Aggregate per proxy identity with per-node semantics ---
-    # Instead of summing tests_passed/tests_total across all nodes
-    # (which creates inflated, confusing numbers like 66/80 for 2 nodes),
-    # we compute averages per node: avg_tests_passed = total / node_count
+    # --- Aggregate: best result per (identity, node_id) ---
+    # Multiple proxy configs can share the same identity (same uuid@host:port
+    # differing only in query params like ?flow= or ?security=).
+    # We pick the BEST row per node, then compute true node_count and averages.
     aggregated: dict[str, dict] = {}
     for r in all_results:
         pid = get_proxy_identity(r.raw_url)
         if pid not in aggregated:
             aggregated[pid] = {
-                "raw_url": r.raw_url,
-                "node_count": 0,
-                "sum_tests_passed": 0,
-                "tests_total": r.tests_total,  # same for all nodes, take first
-                "best_ping_ms": r.ping_ms,
-                "dl_sum": 0,
-                "ul_sum": 0,
-                "max_speed_score": 0.0,
-                "last_tested": r.last_tested,
+                "node_best": {},          # node_id → best NodeProxyResult
+                "tests_total": r.tests_total,
             }
         agg = aggregated[pid]
-        agg["node_count"] += 1
-        agg["sum_tests_passed"] += r.tests_passed
+        nid = r.node_id
+        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
+            agg["node_best"][nid] = r
         agg["tests_total"] = max(agg["tests_total"], r.tests_total)
-        agg["best_ping_ms"] = min(agg["best_ping_ms"], r.ping_ms)
-        agg["dl_sum"] += r.download_speed_kbps
-        agg["ul_sum"] += r.upload_speed_kbps
-        agg["max_speed_score"] = max(agg["max_speed_score"], r.speed_score)
-        if r.last_tested > agg["last_tested"]:
-            agg["last_tested"] = r.last_tested
 
-    # Build final list with computed averages
+    # Build final list with per-node-best averages
     proxy_list: list[dict] = []
-    for agg in aggregated.values():
-        nc = agg["node_count"]
+    for pid, agg in aggregated.items():
+        nc = len(agg["node_best"])
+        if nc == 0:
+            continue
+        best_rows = list(agg["node_best"].values())
+
+        sum_scores = sum(r.speed_score for r in best_rows)
+        sum_dl     = sum(r.download_speed_kbps for r in best_rows)
+        sum_ul     = sum(r.upload_speed_kbps for r in best_rows)
+        sum_tests  = sum(r.tests_passed for r in best_rows)
+        best_ping  = min(r.ping_ms for r in best_rows)
+        max_total  = max(r.tests_total for r in best_rows)
+        best_row   = max(best_rows, key=lambda r: r.speed_score)
+
         proxy_list.append({
-            "raw_url": agg["raw_url"],
-            "node_count": nc,
-            "avg_tests_passed": agg["sum_tests_passed"] // nc if nc else 0,
-            "tests_total": agg["tests_total"],
-            "best_ping_ms": agg["best_ping_ms"],
-            "avg_dl_kbps": agg["dl_sum"] // nc if nc else 0,
-            "avg_ul_kbps": agg["ul_sum"] // nc if nc else 0,
-            "max_speed_score": agg["max_speed_score"],
-            "last_tested": agg["last_tested"],
+            "raw_url":          best_row.raw_url,
+            "node_count":       nc,
+            "avg_speed_score":  round(sum_scores / nc, 1),
+            "avg_tests_passed": sum_tests // nc,
+            "tests_total":      max_total,
+            "best_ping_ms":     best_ping,
+            "avg_dl_kbps":      sum_dl // nc,
+            "avg_ul_kbps":      sum_ul // nc,
+            "last_tested":      max(r.last_tested for r in best_rows),
         })
 
-    # Sort: most nodes -> highest speed -> lowest ping
+    # Sort: most nodes first → then highest average speed score
     proxy_list.sort(
-        key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"])
+        key=lambda x: (-x["node_count"], -x["avg_speed_score"])
     )
 
     return templates.TemplateResponse(request, "proxies.html", {
@@ -982,8 +984,14 @@ def _cleanup_stale_node_data(session) -> dict:
     if stats["stale_marked"] > 0:
         session.commit()
 
-    # Step 2: Delete NPR rows from offline nodes
-    offline_ids = [n.id for n in all_nodes if not n.is_online]
+    # Step 2: Delete NPR rows from offline nodes (fresh query after commit)
+    offline_rows = session.exec(
+        select(Node.id).where(Node.is_online == False)
+    ).all()
+    offline_ids: list[int] = [
+        int(row[0]) if isinstance(row, tuple) else int(row)
+        for row in offline_rows
+    ]
     if offline_ids:
         result = session.exec(
             delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids))
@@ -992,7 +1000,8 @@ def _cleanup_stale_node_data(session) -> dict:
         stats["offline_npr_deleted"] = result.rowcount if hasattr(result, "rowcount") else 0
 
     # Step 3: Delete NPR rows from node_ids not present in nodes table at all
-    all_node_ids = {n.id for n in all_nodes}
+    all_node_ids_raw = session.exec(select(Node.id)).all()
+    all_node_ids = {int(row[0]) if isinstance(row, tuple) else int(row) for row in all_node_ids_raw}
     orphan_rows = session.exec(
         select(NodeProxyResult.node_id).distinct()
     ).all()
@@ -1017,8 +1026,12 @@ def _cleanup_stale_node_data(session) -> dict:
             f"orphan node_ids (node no longer exists)"
         )
 
-    # Collect remaining online node IDs
-    stats["online_ids"] = [n.id for n in all_nodes if n.is_online]
+    # Collect remaining online node IDs (fresh query)
+    online_rows = session.exec(select(Node.id).where(Node.is_online == True)).all()
+    stats["online_ids"] = [
+        int(row[0]) if isinstance(row, tuple) else int(row)
+        for row in online_rows
+    ]
 
     return stats
 
