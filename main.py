@@ -1222,6 +1222,40 @@ async def api_fetch_status():
 # ---------------------------------------------------------------------------
 # WEBHOOK — Public proxy distribution (from node results)
 # ---------------------------------------------------------------------------
+def _compute_webhook_averages(
+    results: list[NodeProxyResult],
+) -> dict[str, dict]:
+    """Aggregate per proxy identity: best result per node_id, then compute averages.
+
+    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float}
+    """
+    grouped: dict[str, dict] = {}
+    for r in results:
+        if r.tests_passed <= 0:
+            continue
+        pid = get_proxy_identity(r.raw_url)
+        if pid not in grouped:
+            grouped[pid] = {"node_best": {}, "total": r.tests_total}
+        agg = grouped[pid]
+        nid = r.node_id
+        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
+            agg["node_best"][nid] = r
+
+    out = {}
+    for pid, agg in grouped.items():
+        nc = len(agg["node_best"])
+        if nc == 0:
+            continue
+        rows = list(agg["node_best"].values())
+        out[pid] = {
+            "raw_url": max(rows, key=lambda r: r.speed_score).raw_url,
+            "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
+            "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
+            "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
+        }
+    return out
+
+
 def _apply_webhook_filters(proxy_urls: list[str], speeds: dict, settings) -> list[str]:
     """Filter proxies by min speed thresholds and optionally rename them.
     
@@ -1292,38 +1326,23 @@ async def webhook_output(secret_path: str):
         # Global Consensus Webhook: {webhook_secret_path}/global
         global_prefix = f"{settings.webhook_secret_path}/global"
         if secret_path == global_prefix:
-            # Aggregate all node results
-            stats = defaultdict(lambda: {"passes": 0, "speed_scores": [], "dl_max": 0, "ul_max": 0, "link": ""})
-
+            # Aggregate all node results using per-node-best averaging
             node_results = session.exec(select(NodeProxyResult)).all()
-            for np_r in node_results:
-                if np_r.tests_passed > 0:
-                    pid = get_proxy_identity(np_r.raw_url)
-                    stats[pid]["link"] = np_r.raw_url  # Keep the latest
-                    stats[pid]["passes"] += 1
-                    stats[pid]["speed_scores"].append(np_r.speed_score)
-                    stats[pid]["dl_max"] = max(stats[pid]["dl_max"], np_r.download_speed_kbps)
-                    stats[pid]["ul_max"] = max(stats[pid]["ul_max"], np_r.upload_speed_kbps)
+            avg_data = _compute_webhook_averages(node_results)
 
-            consensus_list = []
-            for pid, data in stats.items():
-                avg_speed = sum(data["speed_scores"]) / len(data["speed_scores"]) if data["speed_scores"] else 0
-                consensus_list.append({
-                    "link": data["link"],
-                    "passes": data["passes"],
-                    "avg_speed": avg_speed,
-                    "dl": data["dl_max"],
-                    "ul": data["ul_max"],
-                })
-            
-            consensus_list.sort(key=lambda x: (x["passes"], x["avg_speed"]), reverse=True)
+            # Sort by avg_score descending, then by node_count (passes) as tiebreaker
+            sorted_ids = sorted(
+                avg_data.keys(),
+                key=lambda pid: (avg_data[pid]["avg_score"], len(avg_data[pid]["node_ids"]) if "node_ids" in avg_data[pid] else 0),
+                reverse=True
+            )
 
             top_n = settings.global_sub_top_n
             if top_n > 0:
-                consensus_list = consensus_list[:top_n]
+                sorted_ids = sorted_ids[:top_n]
 
-            urls = [p["link"] for p in consensus_list]
-            speeds = {p["link"]: {"dl": p["dl"], "ul": p["ul"]} for p in consensus_list}
+            urls = [avg_data[pid]["raw_url"] for pid in sorted_ids]
+            speeds = {avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]} for pid in sorted_ids}
             lines = _apply_webhook_filters(urls, speeds, settings)
             return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 
@@ -1331,28 +1350,22 @@ async def webhook_output(secret_path: str):
         if secret_path != settings.webhook_secret_path:
             raise HTTPException(status_code=404)
 
-        # Aggregate across nodes: pick best result per proxy
+        # Aggregate across nodes: use per-node-best averaging for speeds
         all_results = session.exec(
             select(NodeProxyResult)
             .where(NodeProxyResult.tests_passed > 0)
         ).all()
 
-        best_by_url = {}
-        for r in all_results:
-            pid = get_proxy_identity(r.raw_url)
-            if pid not in best_by_url or r.speed_score > best_by_url[pid].speed_score:
-                best_by_url[pid] = r
+        avg_data = _compute_webhook_averages(all_results)
 
-        proxies = sorted(
-            best_by_url.values(),
-            key=lambda x: (-x.speed_score, -x.tests_passed, x.ping_ms)
-        )
+        # Sort by avg_score descending
+        sorted_ids = sorted(avg_data.keys(), key=lambda pid: -avg_data[pid]["avg_score"])
 
         if settings.webhook_max_proxies > 0:
-            proxies = proxies[:settings.webhook_max_proxies]
+            sorted_ids = sorted_ids[:settings.webhook_max_proxies]
 
-    urls = [p.raw_url for p in proxies]
-    speeds = {p.raw_url: {"dl": p.download_speed_kbps, "ul": p.upload_speed_kbps} for p in proxies}
+    urls = [avg_data[pid]["raw_url"] for pid in sorted_ids]
+    speeds = {avg_data[pid]["raw_url"]: {"dl": avg_data[pid]["avg_dl"], "ul": avg_data[pid]["avg_ul"]} for pid in sorted_ids}
     lines = _apply_webhook_filters(urls, speeds, settings)
 
     text = "\n".join(lines)
