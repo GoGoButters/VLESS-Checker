@@ -40,7 +40,7 @@
                         <span class="px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-[11px] font-bold">{{ p.node_count }}</span>
                     </td>
                     <td class="px-4 py-4 text-center">
-                        <span class="px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-[11px] font-semibold">{{ p.total_tests_passed }}/{{ p.total_tests_total }}</span>
+                        <span class="px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 text-[11px] font-semibold">{{ p.avg_tests_passed }}/{{ p.tests_total }}</span>
                     </td>
                     <td class="px-4 py-4 text-center">
                         {% if p.best_ping_ms < 200 %}

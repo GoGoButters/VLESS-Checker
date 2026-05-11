@@ -151,6 +151,18 @@ DEFAULT_SUBSCRIPTIONS = [
 async def on_startup():
     setup_log_buffer()
     create_db_and_tables()
+
+    # Clean up stale node results from previous runs
+    with Session(engine) as session:
+        cleanup_stats = _cleanup_stale_node_data(session)
+        if any(v for k, v in cleanup_stats.items() if k != "online_ids" and v > 0):
+            logger.info(
+                f"Startup cleanup: stale_marked={cleanup_stats['stale_marked']} "
+                f"offline_npr={cleanup_stats['offline_npr_deleted']} "
+                f"orphan_npr={cleanup_stats['orphan_npr_deleted']} "
+                f"online_nodes={len(cleanup_stats['online_ids'])}"
+            )
+
     # Seed default settings if empty
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
@@ -480,98 +492,51 @@ async def proxies_page(request: Request):
         return RedirectResponse("/login", status_code=302)
 
     with Session(engine) as session:
-        # --- Diagnostic: count everything before cleanup ---
-        total_nodes = session.exec(select(func.count(Node.id))).one()
-        total_npr = session.exec(select(func.count(NodeProxyResult.id))).one()
+        # --- Run stale data cleanup ---
+        cleanup_stats = _cleanup_stale_node_data(session)
+        logger.info(
+            f"/proxies cleanup: stale_marked={cleanup_stats['stale_marked']} "
+            f"offline_npr={cleanup_stats['offline_npr_deleted']} "
+            f"orphan_npr={cleanup_stats['orphan_npr_deleted']} "
+            f"online={len(cleanup_stats['online_ids'])}"
+        )
 
-        # Mark nodes as offline if no heartbeat in last 5 minutes.
-        # Use Python filter (not SQL WHERE) because SQLite NULL < 'string'
-        # evaluates to NULL and silently excludes the row from results.
-        stale_threshold = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-        all_nodes = session.exec(select(Node)).all()
-        stale_nodes = [
-            n for n in all_nodes
-            if n.is_online and (not n.last_heartbeat or n.last_heartbeat < stale_threshold)
-        ]
-        for node in stale_nodes:
-            node.is_online = False
-            logger.info(f"Marked node {node.id} ({node.name}) as offline "
-                        f"(last_heartbeat={node.last_heartbeat or 'NULL'})")
-        if stale_nodes:
-            session.commit()
-
-        # Clean up NodeProxyResult rows belonging to offline nodes
-        offline_ids = [n.id for n in all_nodes if not n.is_online]
-        if offline_ids:
-            session.exec(
-                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids))
-            )
-            session.commit()
-            logger.info(f"Cleaned up stale NodeProxyResult rows from {len(offline_ids)} offline nodes")
-
-        # Clean up orphan NodeProxyResult rows (node_id not in nodes table at all)
-        all_node_ids = {n.id for n in all_nodes}
-        orphan_rows = session.exec(
-            select(NodeProxyResult.node_id).distinct()
-        ).all()
-        orphan_ids = [
-            row[0] if isinstance(row, tuple) else row
-            for row in orphan_rows
-            if (row[0] if isinstance(row, tuple) else row) not in all_node_ids
-        ]
-        if orphan_ids:
-            session.exec(
-                delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(orphan_ids))
-            )
-            session.commit()
-            logger.info(f"Cleaned up NodeProxyResult rows from {len(orphan_ids)} "
-                        f"orphan node_ids (node no longer exists)")
-
-        # --- Diagnostic: count after cleanup ---
-        online_ids = [n.id for n in all_nodes if n.is_online]
-        recent_online = [
-            n for n in all_nodes
-            if n.is_online and n.last_heartbeat and n.last_heartbeat >= stale_threshold
-        ]
-        remaining_npr = session.exec(select(func.count(NodeProxyResult.id))).one()
-        logger.info(f"/proxies diag: total_nodes={total_nodes} online={len(online_ids)} "
-                    f"recent_heartbeat={len(recent_online)} stale_marked={len(stale_nodes)} "
-                    f"orphan_cleaned={len(orphan_ids)} npr_before={total_npr} npr_after={remaining_npr}")
-
-        # Aggregate: group by raw_url, sum passes, average ping/speed
-        # Only include results from online nodes to avoid stale/inflated counts
+        online_ids = cleanup_stats["online_ids"]
         online_node_ids_set = set(online_ids)
 
+        # --- Fetch results ONLY from online nodes (SQL-side filter) ---
         if online_node_ids_set:
-            all_unfiltered = session.exec(
-                select(NodeProxyResult).where(NodeProxyResult.tests_passed > 0)
+            all_results = session.exec(
+                select(NodeProxyResult)
+                .where(NodeProxyResult.tests_passed > 0)
+                .where(NodeProxyResult.node_id.in_(online_node_ids_set))
             ).all()
-            all_results = [r for r in all_unfiltered if r.node_id in online_node_ids_set]
         else:
             all_results = []
 
-    # Aggregate across nodes
-    aggregated = {}
+    # --- Aggregate per proxy identity with per-node semantics ---
+    # Instead of summing tests_passed/tests_total across all nodes
+    # (which creates inflated, confusing numbers like 66/80 for 2 nodes),
+    # we compute averages per node: avg_tests_passed = total / node_count
+    aggregated: dict[str, dict] = {}
     for r in all_results:
         pid = get_proxy_identity(r.raw_url)
         if pid not in aggregated:
             aggregated[pid] = {
                 "raw_url": r.raw_url,
                 "node_count": 0,
-                "total_tests_passed": 0,
-                "total_tests_total": 0,
+                "sum_tests_passed": 0,
+                "tests_total": r.tests_total,  # same for all nodes, take first
                 "best_ping_ms": r.ping_ms,
-                "avg_dl_kbps": 0,
-                "avg_ul_kbps": 0,
-                "max_speed_score": 0,
-                "last_tested": r.last_tested,
                 "dl_sum": 0,
                 "ul_sum": 0,
+                "max_speed_score": 0.0,
+                "last_tested": r.last_tested,
             }
         agg = aggregated[pid]
         agg["node_count"] += 1
-        agg["total_tests_passed"] += r.tests_passed
-        agg["total_tests_total"] += r.tests_total
+        agg["sum_tests_passed"] += r.tests_passed
+        agg["tests_total"] = max(agg["tests_total"], r.tests_total)
         agg["best_ping_ms"] = min(agg["best_ping_ms"], r.ping_ms)
         agg["dl_sum"] += r.download_speed_kbps
         agg["ul_sum"] += r.upload_speed_kbps
@@ -579,26 +544,26 @@ async def proxies_page(request: Request):
         if r.last_tested > agg["last_tested"]:
             agg["last_tested"] = r.last_tested
 
-    # Compute averages and sort
-    proxy_list = []
+    # Build final list with computed averages
+    proxy_list: list[dict] = []
     for agg in aggregated.values():
         nc = agg["node_count"]
-        agg["avg_dl_kbps"] = agg["dl_sum"] // nc if nc else 0
-        agg["avg_ul_kbps"] = agg["ul_sum"] // nc if nc else 0
-        # Ensure all required keys exist for template
-        agg.setdefault("raw_url", "")
-        agg.setdefault("node_count", 0)
-        agg.setdefault("total_tests_passed", 0)
-        agg.setdefault("total_tests_total", 0)
-        agg.setdefault("best_ping_ms", 0)
-        agg.setdefault("avg_dl_kbps", 0)
-        agg.setdefault("avg_ul_kbps", 0)
-        agg.setdefault("max_speed_score", 0)
-        agg.setdefault("last_tested", "")
-        proxy_list.append(agg)
-    
+        proxy_list.append({
+            "raw_url": agg["raw_url"],
+            "node_count": nc,
+            "avg_tests_passed": agg["sum_tests_passed"] // nc if nc else 0,
+            "tests_total": agg["tests_total"],
+            "best_ping_ms": agg["best_ping_ms"],
+            "avg_dl_kbps": agg["dl_sum"] // nc if nc else 0,
+            "avg_ul_kbps": agg["ul_sum"] // nc if nc else 0,
+            "max_speed_score": agg["max_speed_score"],
+            "last_tested": agg["last_tested"],
+        })
+
     # Sort: most nodes -> highest speed -> lowest ping
-    proxy_list.sort(key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"]))
+    proxy_list.sort(
+        key=lambda x: (-x["node_count"], -x["max_speed_score"], x["best_ping_ms"])
+    )
 
     return templates.TemplateResponse(request, "proxies.html", {
         "user": user,
@@ -639,6 +604,59 @@ async def nodes_page(request: Request):
         "nodes": nodes,
         "settings": settings,
     })
+
+
+# ---------------------------------------------------------------------------
+# DEBUG: NodeProxyResult summary
+# ---------------------------------------------------------------------------
+@app.get("/api/debug/npr-summary")
+async def api_debug_npr_summary():
+    """Diagnostic: show NPR state, online nodes, and per-node row counts."""
+    with Session(engine) as session:
+        all_nodes = session.exec(select(Node)).all()
+        npr_total = session.exec(select(func.count(NodeProxyResult.id))).one()
+        npr_passing = session.exec(
+            select(func.count(NodeProxyResult.id))
+            .where(NodeProxyResult.tests_passed > 0)
+        ).one()
+
+        # Per-node NPR counts
+        node_npr_counts = {}
+        for node in all_nodes:
+            count = session.exec(
+                select(func.count(NodeProxyResult.id))
+                .where(NodeProxyResult.node_id == node.id)
+            ).one()
+            node_npr_counts[node.id] = {
+                "name": node.name,
+                "is_online": node.is_online,
+                "last_heartbeat": node.last_heartbeat,
+                "npr_count": count,
+            }
+
+        # Node IDs in NPR that aren't in nodes table
+        existing_ids = {n.id for n in all_nodes}
+        npr_node_ids = session.exec(
+            select(NodeProxyResult.node_id).distinct()
+        ).all()
+        orphan_ids = []
+        for row in npr_node_ids:
+            nid = row[0] if isinstance(row, tuple) else row
+            try:
+                nid = int(nid)
+            except (TypeError, ValueError):
+                continue
+            if nid not in existing_ids:
+                orphan_ids.append(nid)
+
+    return {
+        "nodes_total": len(all_nodes),
+        "nodes_online": sum(1 for n in all_nodes if n.is_online),
+        "npr_total": npr_total,
+        "npr_passing": npr_passing,
+        "per_node": node_npr_counts,
+        "orphan_node_ids_in_npr": orphan_ids,
+    }
 
 
 @app.post("/nodes/delete/{node_id}")
@@ -894,6 +912,101 @@ def _evaluate_bans():
 
     except Exception as e:
         logger.error(f"Error evaluating bans: {e}", exc_info=True)
+
+# ---------------------------------------------------------------------------
+# Shared cleanup: remove stale NodeProxyResult rows from offline/orphan nodes
+# ---------------------------------------------------------------------------
+def _cleanup_stale_node_data(session) -> dict:
+    """Delete NodeProxyResult rows belonging to offline or non-existent nodes.
+
+    Uses datetime.fromisoformat() to safely compare ISO timestamps
+    (avoids edge cases with differing microsecond / timezone precision).
+
+    Returns a dict with cleanup statistics for logging.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    stale_threshold_dt = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stats = {
+        "stale_marked": 0,
+        "offline_npr_deleted": 0,
+        "orphan_npr_deleted": 0,
+        "online_ids": [],
+    }
+
+    all_nodes = session.exec(select(Node)).all()
+
+    # Step 1: Mark nodes as offline if no heartbeat in last 5 minutes
+    for node in all_nodes:
+        if not node.is_online:
+            continue
+        if not node.last_heartbeat:
+            node.is_online = False
+            stats["stale_marked"] += 1
+            logger.info(
+                f"Marked node {node.id} ({node.name}) as offline (last_heartbeat=NULL)"
+            )
+            continue
+        try:
+            hb = datetime.fromisoformat(node.last_heartbeat)
+            if hb < stale_threshold_dt:
+                node.is_online = False
+                stats["stale_marked"] += 1
+                logger.info(
+                    f"Marked node {node.id} ({node.name}) as offline "
+                    f"(last_heartbeat={node.last_heartbeat})"
+                )
+        except (ValueError, TypeError):
+            node.is_online = False
+            stats["stale_marked"] += 1
+            logger.warning(
+                f"Marked node {node.id} ({node.name}) as offline "
+                f"(malformed last_heartbeat={node.last_heartbeat!r})"
+            )
+
+    if stats["stale_marked"] > 0:
+        session.commit()
+
+    # Step 2: Delete NPR rows from offline nodes
+    offline_ids = [n.id for n in all_nodes if not n.is_online]
+    if offline_ids:
+        result = session.exec(
+            delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids))
+        )
+        session.commit()
+        stats["offline_npr_deleted"] = result.rowcount if hasattr(result, "rowcount") else 0
+
+    # Step 3: Delete NPR rows from node_ids not present in nodes table at all
+    all_node_ids = {n.id for n in all_nodes}
+    orphan_rows = session.exec(
+        select(NodeProxyResult.node_id).distinct()
+    ).all()
+    orphan_ids: list[int] = []
+    for row in orphan_rows:
+        nid = row[0] if isinstance(row, tuple) else row
+        try:
+            nid = int(nid)
+        except (TypeError, ValueError):
+            continue
+        if nid not in all_node_ids:
+            orphan_ids.append(nid)
+
+    if orphan_ids:
+        result = session.exec(
+            delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(orphan_ids))
+        )
+        session.commit()
+        stats["orphan_npr_deleted"] = result.rowcount if hasattr(result, "rowcount") else 0
+        logger.info(
+            f"Cleaned up NodeProxyResult rows from {len(orphan_ids)} "
+            f"orphan node_ids (node no longer exists)"
+        )
+
+    # Collect remaining online node IDs
+    stats["online_ids"] = [n.id for n in all_nodes if n.is_online]
+
+    return stats
+
 
 @app.post("/api/node/heartbeat")
 async def node_heartbeat(request: Request, authorization: str = Header(None)):
