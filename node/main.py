@@ -76,6 +76,7 @@ class NodeApp:
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
         )
+        self._heartbeat_task = None  # Background heartbeat task
         logger.info(f"NodeApp initialized. Master URL: {self.master_url}")
 
     def _should_wait_for_schedule(self) -> bool:
@@ -99,6 +100,26 @@ class NodeApp:
         elapsed = (datetime.now(timezone.utc) - self.last_test_completed_at).total_seconds()
         remaining = (self.last_schedule_interval * 60) - elapsed
         return max(0, remaining)
+
+    async def _heartbeat_loop(self):
+        """Background loop: send heartbeat to master every 30 seconds."""
+        logger.info("Heartbeat loop started")
+        while True:
+            await asyncio.sleep(30)
+            if self.node_id is None:
+                # Not registered yet, skip heartbeat
+                continue
+            try:
+                resp = await self.http_client.post(
+                    f"{self.master_url}/api/node/heartbeat",
+                    json={"node_id": self.node_id}
+                )
+                if resp.status_code == 200:
+                    logger.debug(f"Heartbeat sent for node {self.node_id}")
+                else:
+                    logger.warning(f"Heartbeat failed: HTTP {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Heartbeat error: {repr(e)}")
 
     async def register(self) -> bool:
         """Register with master, with exponential backoff retry on connection errors."""
@@ -293,12 +314,16 @@ class NodeApp:
             )
 
         if speed_top_n > 0 and valid_proxies:
-            logger.info(f"Running speed tests for top {min(speed_top_n, len(valid_proxies))} proxies (multi-stream)...")
-
             to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
-            speed_sem = asyncio.Semaphore(2)  # 2 concurrent speed tests (each uses 4 streams)
+            total = len(valid_proxies)
+            speed_sem = asyncio.Semaphore(2)
+            counter_lock = asyncio.Lock()
+            done = 0
+
+            logger.info(f"Running speed tests for top {len(to_test)} proxies (multi-stream, total={total})...")
 
             async def _speed_one(p):
+                nonlocal done
                 async with speed_sem:
                     result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
                     if result:
@@ -306,8 +331,9 @@ class NodeApp:
                         p.download_speed_kbps = dl
                         p.upload_speed_kbps = ul
                         p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
-                        logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f}")
-                        # Update the result in all_tested_results
+                        async with counter_lock:
+                            done += 1
+                            logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f} ({done}/{total})")
                         for r in all_tested_results:
                             if r["raw_url"] == p.raw_url:
                                 r["download_speed_kbps"] = dl
@@ -316,6 +342,8 @@ class NodeApp:
                                 break
                     else:
                         p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+                        async with counter_lock:
+                            done += 1
 
             await asyncio.gather(*[_speed_one(p) for p in to_test])
 
@@ -368,6 +396,9 @@ async def main():
     
     # Start the log sender loop in the background
     app._log_task = asyncio.create_task(app.log_sender_loop())
+    
+    # Start the heartbeat loop in the background (keeps node online during testing)
+    app._heartbeat_task = asyncio.create_task(app._heartbeat_loop())
     
     while True:
         try:

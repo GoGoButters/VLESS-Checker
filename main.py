@@ -159,7 +159,6 @@ async def on_startup():
         if any(v for k, v in cleanup_stats.items() if k != "online_ids" and v > 0):
             logger.info(
                 f"Startup cleanup: stale_marked={cleanup_stats['stale_marked']} "
-                f"offline_npr={cleanup_stats['offline_npr_deleted']} "
                 f"orphan_npr={cleanup_stats['orphan_npr_deleted']} "
                 f"online_nodes={len(cleanup_stats['online_ids'])}"
             )
@@ -520,7 +519,6 @@ async def proxies_page(request: Request):
         cleanup_stats = _cleanup_stale_node_data(session)
         logger.info(
             f"/proxies cleanup: stale_marked={cleanup_stats['stale_marked']} "
-            f"offline_npr={cleanup_stats['offline_npr_deleted']} "
             f"orphan_npr={cleanup_stats['orphan_npr_deleted']} "
             f"online={len(cleanup_stats['online_ids'])}"
         )
@@ -950,10 +948,9 @@ def _cleanup_stale_node_data(session) -> dict:
     """
     from datetime import datetime, timezone, timedelta
 
-    stale_threshold_dt = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stale_threshold_dt = datetime.now(timezone.utc) - timedelta(minutes=30)
     stats = {
         "stale_marked": 0,
-        "offline_npr_deleted": 0,
         "orphan_npr_deleted": 0,
         "online_ids": [],
     }
@@ -991,22 +988,7 @@ def _cleanup_stale_node_data(session) -> dict:
     if stats["stale_marked"] > 0:
         session.commit()
 
-    # Step 2: Delete NPR rows from offline nodes (fresh query after commit)
-    offline_rows = session.exec(
-        select(Node.id).where(Node.is_online == False)
-    ).all()
-    offline_ids: list[int] = [
-        int(row[0]) if isinstance(row, tuple) else int(row)
-        for row in offline_rows
-    ]
-    if offline_ids:
-        result = session.exec(
-            delete(NodeProxyResult).where(NodeProxyResult.node_id.in_(offline_ids))
-        )
-        session.commit()
-        stats["offline_npr_deleted"] = result.rowcount if hasattr(result, "rowcount") else 0
-
-    # Step 3: Delete NPR rows from node_ids not present in nodes table at all
+    # Step 2: Delete NPR rows from node_ids not present in nodes table at all (orphan cleanup)
     all_node_ids_raw = session.exec(select(Node.id)).all()
     all_node_ids = {int(row[0]) if isinstance(row, tuple) else int(row) for row in all_node_ids_raw}
     orphan_rows = session.exec(
