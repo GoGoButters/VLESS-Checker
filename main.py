@@ -1288,18 +1288,24 @@ async def webhook_output(secret_path: str):
         # Aggregate: best result per (identity, node_id), then compute averages
         avg_data = _compute_webhook_averages(all_results)
         
-        # Consensus-only filter: return only proxies confirmed by ALL online nodes
-        total_nodes = len(online_ids)
+        # Consensus-only filter: return only proxies confirmed by ALL nodes that have actually reported results
         if settings.webhook_consensus_only:
-            consensus_data = {}
-            for pid, d in avg_data.items():
-                if len(d["node_ids"]) == total_nodes:
-                    consensus_data[pid] = d
-            logger.info(
-                f"Webhook: consensus filter: {len(avg_data)} → {len(consensus_data)} "
-                f"(confirmed by all {total_nodes} nodes)"
-            )
-            avg_data = consensus_data
+            # Count unique nodes that have at least one result in the current aggregation
+            nodes_with_results: set[int] = set()
+            for d in avg_data.values():
+                nodes_with_results.update(d["node_ids"])
+            consensus_threshold = len(nodes_with_results) if nodes_with_results else 0
+
+            if consensus_threshold > 0:
+                consensus_data = {}
+                for pid, d in avg_data.items():
+                    if len(d["node_ids"]) >= consensus_threshold:
+                        consensus_data[pid] = d
+                logger.info(
+                    f"Webhook: consensus filter: {len(avg_data)} → {len(consensus_data)} "
+                    f"(threshold={consensus_threshold}/{len(online_ids)} reporting nodes)"
+                )
+                avg_data = consensus_data
         
         # Apply speed filters BEFORE sorting and limiting
         min_dl = settings.webhook_min_dl_kbps or 0
