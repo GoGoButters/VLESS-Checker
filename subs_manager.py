@@ -31,23 +31,41 @@ def _strip_remark(url: str) -> str:
     return url.split("#", 1)[0]
 
 
-def _extract_proxy_links(text: str) -> list[str]:
-    """Extract all supported proxy links from text."""
+def _extract_proxy_links(text: str, enabled_protocols: dict | None = None) -> list[str]:
+    """Extract all supported proxy links from text, filtered by enabled_protocols."""
+    PROTOCOL_MAP = {
+        "vless": "vless://",
+        "vmess": "vmess://",
+        "trojan": "trojan://",
+        "ss": "ss://",
+        "hy2": "hy2://",
+        "hysteria2": "hysteria2://",
+    }
+
+    # If no filter specified, allow all
+    if enabled_protocols is None:
+        enabled_protocols = {k: True for k in PROTOCOL_MAP.keys()}
+
+    allowed_prefixes = [prefix for proto, prefix in PROTOCOL_MAP.items() if enabled_protocols.get(proto, True)]
+
     links = []
-    protocols = ("vless://", "vmess://", "trojan://", "ss://", "hy2://", "hysteria2://")
     for line in text.split("\n"):
         line = line.strip()
-        if line.startswith(protocols):
+        if any(line.startswith(p) for p in allowed_prefixes):
             links.append(line)
     return links
 
 
-async def fetch_and_parse_subscriptions(session=None) -> list[str]:
+async def fetch_and_parse_subscriptions(session=None, enabled_protocols: dict | None = None) -> list[str]:
     """Fetch all subscription URLs and extract unique VLESS link.
     If session is provided, updates last_config_count for each subscription.
     Only fetches from enabled subscriptions if session is provided.
 
     Excludes proxies that are currently banned (banned_until > now).
+
+    Args:
+        session: SQLModel session for DB operations.
+        enabled_protocols: Optional dict like {"vless": true, "ss": false}. If None, all protocols allowed.
     """
     with Session(engine) as local_session:
         if session is None:
@@ -98,11 +116,11 @@ async def fetch_and_parse_subscriptions(session=None) -> list[str]:
                 
                 # Try base64 decode first
                 decoded = _decode_base64(raw_text)
-                proxy_links = _extract_proxy_links(decoded)
-                
+                proxy_links = _extract_proxy_links(decoded, enabled_protocols)
+
                 # If no links found via base64, try raw text
                 if not proxy_links:
-                    proxy_links = _extract_proxy_links(raw_text)
+                    proxy_links = _extract_proxy_links(raw_text, enabled_protocols)
                 
                 if proxy_links:
                     # Filter out banned proxies

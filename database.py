@@ -1,5 +1,6 @@
 """Database models and engine setup for VPN Checker."""
 
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -7,6 +8,10 @@ from sqlalchemy import text, event
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
+
+# Global generation_id for chunked testing (changes on each scheduler cycle)
+# Used to signal new test cycle to nodes - avoids circular import between main.py and scheduler.py
+generation_id: str = str(uuid.uuid4())
 
 engine = create_engine(
     DATABASE_URL,
@@ -105,6 +110,12 @@ class Settings(SQLModel, table=True):
     # Proxy retention: remember tested proxies for N cycles after they disappear from subscriptions
     good_proxy_retention_cycles: int = Field(default=3)  # 0 = disable retention
 
+    # Protocol filter: JSON dict with enabled protocols (e.g., {"vless":true,"vmess":true,"ss":false})
+    enabled_protocols: str = Field(default='{"vless":true,"vmess":true,"trojan":true,"ss":true,"hy2":true,"hysteria2":true}')
+
+    # Chunking: 0 = disabled (process all at once), N > 0 = process N proxies per chunk for dynamic rating updates
+    chunk_size: int = Field(default=0)
+
 
 class Node(SQLModel, table=True):
     """Remote checker node registration."""
@@ -171,6 +182,8 @@ def _migrate_db():
 
             ("ban_after_n_failures", "INTEGER DEFAULT 3"),
             ("good_proxy_retention_cycles", "INTEGER DEFAULT 3"),
+            ("enabled_protocols", "TEXT DEFAULT '{\"vless\":true,\"vmess\":true,\"trojan\":true,\"ss\":true,\"hy2\":true,\"hysteria2\":true}'"),
+            ("chunk_size", "INTEGER DEFAULT 0"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:

@@ -8,22 +8,24 @@ The master panel does NOT run any proxy tests. It serves as a manager:
 """
 
 import asyncio
+import json
 import logging
 import secrets
 import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, Request, Form, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, Request, Form, HTTPException, Header, BackgroundTasks, Query
 from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, func, delete
-from sqlalchemy import text
+from sqlalchemy import text, or_
 
 from database import (
     create_db_and_tables,
     engine,
+    generation_id,
     Subscription,
     RawProxy,
     Settings,
@@ -406,10 +408,25 @@ async def settings_page(request: Request):
         return RedirectResponse("/login", status_code=302)
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
+        # Parse enabled_protocols JSON for template rendering
+        enabled_protocols = {
+            "vless": True,
+            "vmess": True,
+            "trojan": True,
+            "ss": True,
+            "hy2": True,
+            "hysteria2": True,
+        }
+        if settings and settings.enabled_protocols:
+            try:
+                enabled_protocols = json.loads(settings.enabled_protocols)
+            except Exception:
+                pass
     return templates.TemplateResponse(request, "settings.html", {
         "user": user,
         "settings": settings,
         "saved": False,
+        "enabled_protocols": enabled_protocols,
     })
 
 
@@ -433,11 +450,33 @@ async def settings_save(
 
     ban_after_n_failures: int = Form(3),
     good_proxy_retention_cycles: int = Form(3),
+    chunk_size: int = Form(0),
+
+    # Protocol filter checkboxes
+    proto_vless: int = Form(0),
+    proto_vmess: int = Form(0),
+    proto_trojan: int = Form(0),
+    proto_ss: int = Form(0),
+    proto_hy2: int = Form(0),
+    proto_hysteria2: int = Form(0),
+
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=302)
+
+    # Build enabled_protocols JSON
+    enabled_protocols = {
+        "vless": bool(proto_vless),
+        "vmess": bool(proto_vmess),
+        "trojan": bool(proto_trojan),
+        "ss": bool(proto_ss),
+        "hy2": bool(proto_hy2),
+        "hysteria2": bool(proto_hysteria2),
+    }
+    enabled_protocols_json = json.dumps(enabled_protocols)
+
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
         if settings:
@@ -458,15 +497,21 @@ async def settings_save(
             settings.ban_duration_hours = max(0, ban_duration_hours)
             settings.ban_after_n_failures = max(1, ban_after_n_failures)
             settings.good_proxy_retention_cycles = max(0, good_proxy_retention_cycles)
+            settings.chunk_size = max(0, chunk_size)
+            settings.enabled_protocols = enabled_protocols_json
+
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
             session.add(settings)
             session.commit()
             session.refresh(settings)
+
+    # Re-parse for template rendering
     return templates.TemplateResponse(request, "settings.html", {
         "user": user,
         "settings": settings,
         "saved": True,
+        "enabled_protocols": enabled_protocols,
     })
 
 
@@ -757,6 +802,8 @@ async def node_get_config(authorization: str = Header(None)):
         "concurrent_checks_limit": settings.concurrent_checks_limit if settings else 50,
         "speed_test_top_n": settings.speed_test_top_n if settings else 0,
         "schedule_interval_minutes": settings.schedule_interval_minutes if settings else 0,
+        "chunk_size": settings.chunk_size if settings and settings.chunk_size else 0,
+        "generation_id": generation_id,
         "test_urls": [
             {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
             for t in test_urls
@@ -765,25 +812,83 @@ async def node_get_config(authorization: str = Header(None)):
 
 
 @app.get("/api/node/proxies")
-async def node_get_proxies(authorization: str = Header(None)):
-    """Serve raw fetched proxies to workers for testing."""
+async def node_get_proxies(
+    authorization: str = Header(None),
+    offset: int = Query(default=0),
+    limit: int = Query(default=0),
+):
+    """Serve raw fetched proxies to workers for testing with optional pagination and protocol filtering."""
     if not _verify_node_token(authorization):
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Protocol prefix map
+    PROTOCOL_MAP = {
+        "vless": "vless://",
+        "vmess": "vmess://",
+        "trojan": "trojan://",
+        "ss": "ss://",
+        "hy2": "hy2://",
+        "hysteria2": "hysteria2://",
+    }
+
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
-        limit = settings.node_check_top_n if settings and settings.node_check_top_n > 0 else 0
-        query = select(RawProxy).order_by(RawProxy.id)
+
+        # Parse enabled_protocols from settings
+        enabled_protocols = {}
+        if settings and settings.enabled_protocols:
+            try:
+                enabled_protocols = json.loads(settings.enabled_protocols)
+            except Exception:
+                enabled_protocols = {}
+
+        # Build protocol filter conditions (if any protocols are disabled)
+        conditions = []
+        for proto, prefix in PROTOCOL_MAP.items():
+            if enabled_protocols.get(proto, True):
+                conditions.append(RawProxy.raw_url.like(f"{prefix}%"))
+
+        # Determine effective limit: explicit limit > chunk_size > node_check_top_n
+        effective_limit = 0
         if limit > 0:
-            query = query.limit(limit)
+            effective_limit = limit
+        elif settings and settings.chunk_size > 0:
+            effective_limit = settings.chunk_size
+        elif settings and settings.node_check_top_n > 0:
+            effective_limit = settings.node_check_top_n
+
+        # Get total count with same filters
+        count_query = select(func.count(RawProxy.id))
+        if conditions:
+            count_query = count_query.where(or_(*conditions))
+        total = session.exec(count_query).one()
+
+        # Build main query with filters, ordering, offset, limit
+        query = select(RawProxy).order_by(RawProxy.id)
+        if conditions:
+            query = query.where(or_(*conditions))
+        if offset > 0:
+            query = query.offset(offset)
+        if effective_limit > 0:
+            query = query.limit(effective_limit)
+
         raw_proxies = session.exec(query).all()
 
     raw_urls = sorted([p.raw_url for p in raw_proxies])
-    run_id = hashlib.md5("".join(raw_urls).encode("utf-8")).hexdigest() if raw_urls else "empty"
+
+    # Generate run_id based on generation_id + offset (to detect new chunks)
+    run_id_str = f"{generation_id}:{offset}"
+    run_id = hashlib.md5(run_id_str.encode("utf-8")).hexdigest() if raw_urls else "empty"
+
+    # Calculate if there are more results
+    has_more = (offset + len(raw_urls)) < total if total > 0 else False
 
     return {
         "run_id": run_id,
-        "proxies": raw_urls
+        "proxies": raw_urls,
+        "offset": offset,
+        "total": total,
+        "has_more": has_more,
     }
 
 
@@ -795,19 +900,30 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
     body = await request.json()
     node_id = body.get("node_id")
     results = body.get("results", [])
+    is_partial = body.get("is_partial", False)
 
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id required")
 
     now = datetime.now(timezone.utc).isoformat()
+    chunk_urls = [r.get("raw_url", "") for r in results]
 
     with Session(engine) as session:
         node = session.get(Node, node_id)
         if not node:
             raise HTTPException(status_code=404, detail="Node not found")
 
-        # Clear old results for this node
-        session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
+        # Clear old results: if partial, only delete for proxies in this chunk
+        if is_partial and chunk_urls:
+            session.exec(
+                delete(NodeProxyResult).where(
+                    NodeProxyResult.node_id == node_id,
+                    NodeProxyResult.raw_url.in_(chunk_urls)
+                )
+            )
+        else:
+            # Full replacement: clear all results for this node
+            session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
 
         passed = 0
         failed_urls = []
@@ -836,17 +952,21 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
         session.add(node)
         session.commit()
 
-    logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed)")
+    logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed), is_partial={is_partial}")
 
-    # Evaluate bans across all nodes
-    background_tasks.add_task(_evaluate_bans)
+    # Evaluate bans across all nodes (optionally limit to chunk_urls)
+    background_tasks.add_task(_evaluate_bans, chunk_urls if is_partial else None)
 
     return {"status": "ok", "accepted": len(results)}
 
 
-def _evaluate_bans():
+def _evaluate_bans(raw_urls: list[str] | None = None):
     """Evaluate ban status for all proxies based on cross-node consensus.
-    
+
+    Args:
+        raw_urls: Optional list to limit evaluation to specific proxies (for chunked mode).
+                  If None, evaluates all tested proxies.
+
     Rules:
     - A proxy is considered 'failed' only if it failed on ALL connected workers
     - If it passed on at least one worker → reset consecutive_failures to 0
@@ -881,6 +1001,12 @@ def _evaluate_bans():
             tested_urls = set(proxy_node_results.keys())
             if not tested_urls:
                 return
+
+            # If raw_urls provided (chunked mode), intersect with tested_urls
+            if raw_urls:
+                tested_urls = tested_urls & set(raw_urls)
+                if not tested_urls:
+                    return
 
             # Evaluate each tested proxy
             banned_count = 0
@@ -1128,6 +1254,14 @@ async def _background_fetch():
             settings = session.exec(select(Settings)).first()
             retention_limit = settings.good_proxy_retention_cycles if settings else 3
 
+            # Parse enabled_protocols for filtering
+            enabled_protocols = None
+            if settings and settings.enabled_protocols:
+                try:
+                    enabled_protocols = json.loads(settings.enabled_protocols)
+                except Exception:
+                    pass
+
             if retention_limit > 0:
                 existing_rp = session.exec(select(RawProxy)).all()
                 old_retention: dict[str, int] = {}
@@ -1139,7 +1273,7 @@ async def _background_fetch():
 
         # Pass session to update last_config_count
         with Session(engine) as session:
-            proxy_links = await fetch_and_parse_subscriptions(session)
+            proxy_links = await fetch_and_parse_subscriptions(session, enabled_protocols)
             # Compare by identity key (URL minus #remark)
             new_keys = {url.split("#", 1)[0] for url in proxy_links}
 
@@ -1185,6 +1319,11 @@ async def _background_fetch():
                     if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://')):
                         session.add(RawProxy(raw_url=url, retention_cycles=cycles))
                 session.commit()
+
+                # Update generation_id to signal new cycle to nodes
+                import database
+                database.generation_id = str(uuid.uuid4())
+                logger.info(f"Background fetch: updated generation_id={database.generation_id}")
 
         fetch_status["current_phase"] = "done"
         fetch_status["last_fetch_at"] = datetime.now(timezone.utc).isoformat()

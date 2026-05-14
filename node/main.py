@@ -72,6 +72,10 @@ class NodeApp:
         self.last_run_id = None  # Track the master's proxy list version
         self.last_test_completed_at = None  # When the last test cycle finished
         self.last_schedule_interval = 0  # Last known schedule interval from master
+        self.chunk_size = 0  # Chunk size from master (0 = disabled)
+        self.generation_id = None  # Current generation_id from master
+        self.last_generation_id = None  # Previous generation_id (to detect new cycle)
+        self.chunk_offset = 0  # Current offset for chunked requests
         self.http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
@@ -171,38 +175,50 @@ class NodeApp:
         try:
             resp = await self.http_client.get(f"{self.master_url}/api/node/config")
             if resp.status_code == 200:
-                return resp.json()
+                data = resp.json()
+                # Store chunk_size and generation_id for chunking logic
+                self.chunk_size = data.get("chunk_size", 0)
+                self.generation_id = data.get("generation_id")
+                return data
             return None
         except Exception as e:
             logger.error(f"Error fetching config: {repr(e)}")
             return None
 
-    async def get_proxies(self):
-        """Fetch raw proxies and run_id from master. Returns (run_id, proxy_list)."""
+    async def get_proxies(self, offset: int = 0, limit: int = 0):
+        """Fetch raw proxies and run_id from master. Returns (run_id, proxy_list, has_more, total)."""
         try:
-            resp = await self.http_client.get(f"{self.master_url}/api/node/proxies")
+            params = {}
+            if offset > 0:
+                params["offset"] = offset
+            if limit > 0:
+                params["limit"] = limit
+            resp = await self.http_client.get(f"{self.master_url}/api/node/proxies", params=params if params else None)
             if resp.status_code == 200:
                 data = resp.json()
                 run_id = data.get("run_id", "unknown")
                 proxies = data.get("proxies", [])
-                return run_id, proxies
-            return None, []
+                has_more = data.get("has_more", False)
+                total = data.get("total", 0)
+                return run_id, proxies, has_more, total
+            return None, [], False, 0
         except Exception as e:
             logger.error(f"Error fetching proxies: {repr(e)}")
-            return None, []
+            return None, [], False, 0
 
-    async def report_results(self, results, checked_count: int = 0):
+    async def report_results(self, results, checked_count: int = 0, is_partial: bool = False):
         if not self.node_id:
             return False
-            
+
         try:
             resp = await self.http_client.post(f"{self.master_url}/api/node/results", json={
                 "node_id": self.node_id,
                 "results": results,
-                "checked_count": checked_count
+                "checked_count": checked_count,
+                "is_partial": is_partial
             })
             if resp.status_code == 200:
-                logger.info(f"Successfully reported {len(results)} results (out of {checked_count} checked) to master.")
+                logger.info(f"Successfully reported {len(results)} results (out of {checked_count} checked) to master. is_partial={is_partial}")
                 return True
             else:
                 logger.error(f"Failed to report results: HTTP {resp.status_code} - {resp.text}")
@@ -243,7 +259,165 @@ class NodeApp:
             logger.info(f"Schedule interval not elapsed yet. Next test in {remaining_min:.0f}min. Skipping cycle.")
             return
 
-        run_id, raw_urls = await self.get_proxies()
+        # Check if generation_id changed (new scheduler cycle) - reset chunk offset
+        if self.generation_id and self.generation_id != self.last_generation_id:
+            logger.info(f"New generation detected: {self.generation_id} (previous: {self.last_generation_id}). Resetting chunk offset.")
+            self.last_run_id = None  # Reset run_id cache to force re-check
+            self.chunk_offset = 0
+            self.last_generation_id = self.generation_id
+
+        # Use chunking if enabled (chunk_size > 0)
+        if self.chunk_size > 0:
+            await self._run_chunked_testing(test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval)
+        else:
+            # Original non-chunked behavior
+            await self._run_full_testing(test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval)
+
+        # Update last test completion time
+        self.last_test_completed_at = datetime.now(timezone.utc)
+
+    async def _run_chunked_testing(self, test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval):
+        """Run testing in chunks for dynamic rating updates."""
+        from tester import run_proxy_checks
+        from speed_tester import _measure_speed, _compute_speed_score
+
+        total_proxies_checked = 0
+        total_proxies_passed = 0
+
+        while True:
+            # Fetch current chunk
+            run_id, raw_urls, has_more, total = await self.get_proxies(offset=self.chunk_offset, limit=self.chunk_size)
+            logger.info(f"Chunk {self.chunk_offset // self.chunk_size + 1}: offset={self.chunk_offset}, count={len(raw_urls)}, has_more={has_more}, total={total}")
+
+            if not raw_urls:
+                logger.info(f"No more proxies to check at offset {self.chunk_offset}. Chunking complete.")
+                break
+
+            # Skip if run_id hasn't changed (same proxies already tested in this generation)
+            if run_id == self.last_run_id:
+                logger.info(f"Proxies (run_id={run_id}) already tested in this generation. Skipping chunk.")
+                self.chunk_offset += len(raw_urls)
+                if not has_more:
+                    break
+                continue
+
+            logger.info(f"Testing {len(raw_urls)} proxies in chunk (run_id={run_id})...")
+
+            # Test proxies in this chunk
+            status_dict = {
+                "running": True,
+                "current_phase": "checking",
+                "checked": 0,
+                "total": len(raw_urls),
+                "passed": 0,
+                "failed": 0,
+            }
+
+            valid_proxies = await run_proxy_checks(
+                raw_urls, test_urls, ping_thresh, http_timeout, concurrent, status_dict,
+                singbox_path=config.singbox_path,
+            )
+
+            total_proxies_checked += status_dict["checked"]
+            total_proxies_passed += status_dict["passed"]
+            logger.info(f"Chunk results: {status_dict['passed']} passed, {status_dict['failed']} failed")
+
+            # Build results for all tested proxies
+            all_tested_results = []
+            passed_urls = set()
+
+            for p in valid_proxies:
+                passed_urls.add(p.raw_url)
+                all_tested_results.append({
+                    "raw_url": p.raw_url,
+                    "ping_ms": p.ping_ms,
+                    "tests_passed": p.tests_passed,
+                    "tests_total": p.tests_total,
+                    "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
+                    "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
+                    "speed_score": getattr(p, "speed_score", 0.0),
+                })
+
+            for url in raw_urls:
+                if url not in passed_urls:
+                    all_tested_results.append({
+                        "raw_url": url,
+                        "ping_ms": 0,
+                        "tests_passed": 0,
+                        "tests_total": len(test_urls),
+                        "download_speed_kbps": 0,
+                        "upload_speed_kbps": 0,
+                        "speed_score": 0.0,
+                    })
+
+            # Compute baseline speed scores
+            for r in all_tested_results:
+                r["speed_score"] = _compute_speed_score(
+                    r["ping_ms"], r["tests_passed"], r["download_speed_kbps"], r["upload_speed_kbps"]
+                )
+
+            # Optional speed testing for top N proxies in chunk
+            if speed_top_n > 0 and valid_proxies:
+                to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
+                chunk_total = len(valid_proxies)
+                speed_sem = asyncio.Semaphore(2)
+                counter_lock = asyncio.Lock()
+                done = 0
+
+                logger.info(f"Running speed tests for top {len(to_test)} proxies in chunk...")
+
+                async def _speed_one(p):
+                    nonlocal done
+                    async with speed_sem:
+                        result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
+                        if result:
+                            dl, ul = result
+                            p.download_speed_kbps = dl
+                            p.upload_speed_kbps = ul
+                            p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
+                            async with counter_lock:
+                                done += 1
+                                logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f} ({done}/{chunk_total})")
+                            for r in all_tested_results:
+                                if r["raw_url"] == p.raw_url:
+                                    r["download_speed_kbps"] = dl
+                                    r["upload_speed_kbps"] = ul
+                                    r["speed_score"] = p.speed_score
+                                    break
+                        else:
+                            p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+                            async with counter_lock:
+                                done += 1
+
+                await asyncio.gather(*[_speed_one(p) for p in to_test])
+
+            # Report results as partial (upsert instead of full replace)
+            reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"], is_partial=True)
+            if reported:
+                logger.info(f"Reported chunk results (is_partial=True). Offset now at {self.chunk_offset + len(raw_urls)}")
+            else:
+                logger.warning(f"Failed to report chunk results, but continuing to next chunk.")
+
+            # Update run_id after successfully testing this chunk
+            self.last_run_id = run_id
+
+            # Move to next chunk
+            self.chunk_offset += len(raw_urls)
+
+            if not has_more:
+                logger.info(f"All chunks processed. Total: {total_proxies_checked} checked, {total_proxies_passed} passed.")
+                break
+
+        # Final status
+        next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
+        logger.info(f"Chunked testing complete. Checked {total_proxies_checked}, passed {total_proxies_passed}.{next_in}")
+
+    async def _run_full_testing(self, test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval):
+        """Original non-chunked testing logic."""
+        from tester import run_proxy_checks
+        from speed_tester import _measure_speed, _compute_speed_score
+
+        run_id, raw_urls, has_more, total = await self.get_proxies()
         logger.info(f"Fetched proxies: run_id={run_id}, last_run_id={self.last_run_id}, count={len(raw_urls)}, schedule_interval={schedule_interval}min")
         if not raw_urls:
             logger.info("No proxies available from master. Idling.")
@@ -254,9 +428,6 @@ class NodeApp:
             return
 
         logger.info(f"Starting tests with {len(raw_urls)} proxies (run_id={run_id})...")
-
-        # 3. Test proxies using run_proxy_checks
-        from tester import run_proxy_checks
 
         status_dict = {
             "running": True,
@@ -274,11 +445,9 @@ class NodeApp:
 
         logger.info(f"Proxy checks done: {status_dict['passed']} passed, {status_dict['failed']} failed out of {status_dict['checked']} checked.")
 
-        # 4. Build results for ALL tested proxies (passed + failed)
-        # We need to report failures too so the master can evaluate bans across all nodes
         all_tested_results = []
         passed_urls = set()
-        
+
         for p in valid_proxies:
             passed_urls.add(p.raw_url)
             all_tested_results.append({
@@ -290,8 +459,7 @@ class NodeApp:
                 "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
                 "speed_score": getattr(p, "speed_score", 0.0),
             })
-        
-        # Add failed proxies (those that were tested but didn't pass)
+
         for url in raw_urls:
             if url not in passed_urls:
                 all_tested_results.append({
@@ -304,10 +472,6 @@ class NodeApp:
                     "speed_score": 0.0,
                 })
 
-        # 5. Optional: Speed testing phase
-        from speed_tester import _measure_speed, _compute_speed_score
-
-        # Compute baseline speed_score for ALL tested results (even without speed tests)
         for r in all_tested_results:
             r["speed_score"] = _compute_speed_score(
                 r["ping_ms"], r["tests_passed"], r["download_speed_kbps"], r["upload_speed_kbps"]
@@ -347,10 +511,8 @@ class NodeApp:
 
             await asyncio.gather(*[_speed_one(p) for p in to_test])
 
-        # 6. Report ALL results (passed + failed) and save run_id
         self.last_run_id = run_id
-        self.last_test_completed_at = datetime.now(timezone.utc)  # Track when this cycle finished
-        reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"])
+        reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"], is_partial=False)
         if reported:
             next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
             logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.{next_in}")

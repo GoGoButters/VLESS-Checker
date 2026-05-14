@@ -1,12 +1,14 @@
 """Scheduler — periodically fetches subscriptions and stores raw proxies for workers."""
 
 import asyncio
+import json
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Session, select, delete
 
-from database import Settings, Subscription, RawProxy, NodeProxyResult, engine
+from database import Settings, Subscription, RawProxy, NodeProxyResult, engine, generation_id
 from subs_manager import fetch_and_parse_subscriptions
 
 logger = logging.getLogger("vpn_checker.scheduler")
@@ -90,6 +92,14 @@ async def _scheduler_loop():
                 settings = session.exec(select(Settings)).first()
                 retention_limit = settings.good_proxy_retention_cycles if settings else 3
 
+                # Parse enabled_protocols for filtering
+                enabled_protocols = None
+                if settings and settings.enabled_protocols:
+                    try:
+                        enabled_protocols = json.loads(settings.enabled_protocols)
+                    except Exception:
+                        pass
+
                 if retention_limit > 0:
                     existing_rp = session.exec(select(RawProxy)).all()
                     old_retention: dict[str, int] = {}
@@ -101,7 +111,7 @@ async def _scheduler_loop():
 
             # Pass session to update last_config_count and skip disabled
             with Session(engine) as session:
-                proxy_links = await fetch_and_parse_subscriptions(session)
+                proxy_links = await fetch_and_parse_subscriptions(session, enabled_protocols)
                 # Compare by identity key (URL minus #remark)
                 new_keys = {url.split("#", 1)[0] for url in proxy_links}
 
@@ -145,6 +155,11 @@ async def _scheduler_loop():
                             session.add(RawProxy(raw_url=url, retention_cycles=cycles))
                     session.commit()
                     logger.info(f"Scheduler: stored {len(final_proxies)} proxies for workers")
+
+                    # Update generation_id to signal new cycle to nodes
+                    import database
+                    database.generation_id = str(uuid.uuid4())
+                    logger.info(f"Scheduler: updated generation_id={database.generation_id}")
                 else:
                     logger.warning("Scheduler: no proxy links found from subscriptions")
 

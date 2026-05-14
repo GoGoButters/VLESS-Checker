@@ -49,6 +49,50 @@
                     class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
                 <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_speed_test_desc', default='Workers will run download/upload benchmark on top N proxies. 0 to disable.') }}</p>
             </div>
+            <div>
+                <label for="chunk_size" class="block text-sm font-medium text-slate-300 mb-2">Chunk Size</label>
+                <input type="number" name="chunk_size" id="chunk_size" min="0" max="10000"
+                    value="{{ settings.chunk_size or 0 }}"
+                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
+                <p class="text-xs text-slate-500 mt-1">Process proxies in chunks for dynamic rating updates. Recommended: 100-500. 0 = disabled (process all at once).</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="glass rounded-2xl p-6">
+        <h2 class="text-lg font-semibold text-white mb-2">Protocol Filter</h2>
+        <p class="text-sm text-slate-400 mb-4">Only selected protocols will be fetched from subscriptions and tested.</p>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_vless" value="1" {% if enabled_protocols.get('vless', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">VLESS</span>
+            </label>
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_vmess" value="1" {% if enabled_protocols.get('vmess', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">VMess</span>
+            </label>
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_trojan" value="1" {% if enabled_protocols.get('trojan', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">Trojan</span>
+            </label>
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_ss" value="1" {% if enabled_protocols.get('ss', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">Shadowsocks</span>
+            </label>
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_hy2" value="1" {% if enabled_protocols.get('hy2', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">Hysteria2</span>
+            </label>
+            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
+                <input type="checkbox" name="proto_hysteria2" value="1" {% if enabled_protocols.get('hysteria2', true) %}checked{% endif %}
+                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-white">Hysteria2 (alt)</span>
+            </label>
         </div>
     </div>
 
