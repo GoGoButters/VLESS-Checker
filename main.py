@@ -1314,16 +1314,17 @@ async def _background_fetch():
 
             # Store raw proxies with retention_cycles
             if final_proxies:
+                # Update generation_id BEFORE commit - ensures no race condition where
+                # workers see new proxies with old generation_id
+                import database
+                database.generation_id = str(uuid.uuid4())
+                logger.info(f"Background fetch: updated generation_id={database.generation_id}")
+
                 session.exec(delete(RawProxy))
                 for key, (url, cycles) in final_proxies.items():
                     if isinstance(url, str) and len(url) > 10 and url.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hy2://', 'hysteria2://')):
                         session.add(RawProxy(raw_url=url, retention_cycles=cycles))
                 session.commit()
-
-                # Update generation_id to signal new cycle to nodes
-                import database
-                database.generation_id = str(uuid.uuid4())
-                logger.info(f"Background fetch: updated generation_id={database.generation_id}")
 
         fetch_status["current_phase"] = "done"
         fetch_status["last_fetch_at"] = datetime.now(timezone.utc).isoformat()

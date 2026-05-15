@@ -252,19 +252,22 @@ class NodeApp:
         # Update the known schedule interval from master
         self.last_schedule_interval = schedule_interval
 
+        # Check if generation_id changed (new scheduler cycle) - reset state BEFORE schedule check
+        # This ensures manual "Fetch Proxies" triggers immediate re-test even when schedule is active
+        if self.generation_id and self.generation_id != self.last_generation_id:
+            logger.info(f"New generation detected: {self.generation_id} (previous: {self.last_generation_id}). Resetting chunk offset and bypassing schedule wait.")
+            self.last_run_id = None  # Reset run_id cache to force re-check
+            self.chunk_offset = 0
+            self.last_generation_id = self.generation_id
+            # Reset last_test_completed_at to bypass schedule wait - manual fetch should trigger immediate test
+            self.last_test_completed_at = None
+
         # Check if we should wait before running next cycle
         if self._should_wait_for_schedule():
             remaining = self._get_remaining_wait_seconds()
             remaining_min = remaining / 60
             logger.info(f"Schedule interval not elapsed yet. Next test in {remaining_min:.0f}min. Skipping cycle.")
             return
-
-        # Check if generation_id changed (new scheduler cycle) - reset chunk offset
-        if self.generation_id and self.generation_id != self.last_generation_id:
-            logger.info(f"New generation detected: {self.generation_id} (previous: {self.last_generation_id}). Resetting chunk offset.")
-            self.last_run_id = None  # Reset run_id cache to force re-check
-            self.chunk_offset = 0
-            self.last_generation_id = self.generation_id
 
         # Use chunking if enabled (chunk_size > 0)
         if self.chunk_size > 0:
