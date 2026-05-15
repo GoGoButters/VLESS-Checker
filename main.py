@@ -766,6 +766,24 @@ async def node_register(request: Request, authorization: str = Header(None)):
     with Session(engine) as session:
         existing = session.exec(select(Node).where(Node.name == name)).first()
         if existing:
+            # Anti-duplicate: if another instance is still online and testing, reject
+            from datetime import datetime, timezone, timedelta
+            stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=60)
+            try:
+                hb = datetime.fromisoformat(existing.last_heartbeat) if existing.last_heartbeat else None
+            except (ValueError, TypeError):
+                hb = None
+            is_recent = hb is not None and hb >= stale_threshold
+
+            # Anti-duplicate: block registration if another instance is still alive.
+            # is_recent = heartbeat within last 60 seconds.
+            # We block ALL duplicates, not just those in "testing" state —
+            # an idle node still means a live original that shouldn't be replaced.
+            if existing.is_online and is_recent:
+                logger.warning(f"Node '{name}' (id={existing.id}) is already active (status={existing.status}). "
+                               f"Rejecting duplicate registration from {client_ip}.")
+                return {"status": "already_active", "node_id": existing.id}
+
             existing.ip = client_ip
             existing.region = region
             existing.is_online = True
@@ -816,6 +834,7 @@ async def node_get_proxies(
     authorization: str = Header(None),
     offset: int = Query(default=0),
     limit: int = Query(default=0),
+    full: bool = Query(default=False),
 ):
     """Serve raw fetched proxies to workers for testing with optional pagination and protocol filtering."""
     if not _verify_node_token(authorization):
@@ -848,14 +867,16 @@ async def node_get_proxies(
             if enabled_protocols.get(proto, True):
                 conditions.append(RawProxy.raw_url.like(f"{prefix}%"))
 
-        # Determine effective limit: explicit limit > chunk_size > node_check_top_n
+        # When full=True: ignore offset/limit, fetch everything.
+        # effective_limit stays 0 → no LIMIT clause.
         effective_limit = 0
-        if limit > 0:
-            effective_limit = limit
-        elif settings and settings.chunk_size > 0:
-            effective_limit = settings.chunk_size
-        elif settings and settings.node_check_top_n > 0:
-            effective_limit = settings.node_check_top_n
+        if not full:
+            if limit > 0:
+                effective_limit = limit
+            elif settings and settings.chunk_size > 0:
+                effective_limit = settings.chunk_size
+            elif settings and settings.node_check_top_n > 0:
+                effective_limit = settings.node_check_top_n
 
         # Get total count with same filters
         count_query = select(func.count(RawProxy.id))
@@ -867,7 +888,7 @@ async def node_get_proxies(
         query = select(RawProxy).order_by(RawProxy.id)
         if conditions:
             query = query.where(or_(*conditions))
-        if offset > 0:
+        if not full and offset > 0:
             query = query.offset(offset)
         if effective_limit > 0:
             query = query.limit(effective_limit)
@@ -876,20 +897,30 @@ async def node_get_proxies(
 
     raw_urls = sorted([p.raw_url for p in raw_proxies])
 
-    # Generate run_id based on generation_id + offset (to detect new chunks)
-    run_id_str = f"{generation_id}:{offset}"
+    # In full mode: run_id = md5(generation_id) only (no offset, since chunking is now on worker)
+    # In paginated mode: run_id = md5(generation_id:offset) (legacy, kept for existing workers)
+    if full:
+        run_id_str = f"{generation_id}"
+    else:
+        run_id_str = f"{generation_id}:{offset}"
     run_id = hashlib.md5(run_id_str.encode("utf-8")).hexdigest() if raw_urls else "empty"
 
-    # Calculate if there are more results
+    # Calculate if there are more results (paginated mode only)
     has_more = (offset + len(raw_urls)) < total if total > 0 else False
 
-    return {
+    response = {
         "run_id": run_id,
         "proxies": raw_urls,
-        "offset": offset,
+        "offset": 0 if full else offset,
         "total": total,
-        "has_more": has_more,
+        "has_more": False if full else has_more,
     }
+
+    # In full mode: always return chunk_size so worker can slice locally
+    if full and settings:
+        response["chunk_size"] = settings.chunk_size if settings.chunk_size else 0
+
+    return response
 
 
 @app.post("/api/node/results")
@@ -949,6 +980,11 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
         node.proxies_passed = passed
         node.last_heartbeat = now
         node.is_online = True
+        # Mark node idle when full result set is reported (testing cycle complete)
+        if not is_partial:
+            node.status = "idle"
+            node.total_chunks = 0
+            node.current_chunk = 0
         session.add(node)
         session.commit()
 
@@ -1089,6 +1125,9 @@ def _cleanup_stale_node_data(session) -> dict:
             continue
         if not node.last_heartbeat:
             node.is_online = False
+            node.status = "idle"
+            node.total_chunks = 0
+            node.current_chunk = 0
             stats["stale_marked"] += 1
             logger.info(
                 f"Marked node {node.id} ({node.name}) as offline (last_heartbeat=NULL)"
@@ -1098,6 +1137,9 @@ def _cleanup_stale_node_data(session) -> dict:
             hb = datetime.fromisoformat(node.last_heartbeat)
             if hb < stale_threshold_dt:
                 node.is_online = False
+                node.status = "idle"
+                node.total_chunks = 0
+                node.current_chunk = 0
                 stats["stale_marked"] += 1
                 logger.info(
                     f"Marked node {node.id} ({node.name}) as offline "
@@ -1105,6 +1147,9 @@ def _cleanup_stale_node_data(session) -> dict:
                 )
         except (ValueError, TypeError):
             node.is_online = False
+            node.status = "idle"
+            node.total_chunks = 0
+            node.current_chunk = 0
             stats["stale_marked"] += 1
             logger.warning(
                 f"Marked node {node.id} ({node.name}) as offline "
@@ -1201,6 +1246,65 @@ async def node_logs(request: Request, authorization: str = Header(None)):
         
     return {"status": "ok", "received": len(logs)}
 
+
+# ---------------------------------------------------------------------------
+# NODE STATUS — worker reports testing progress
+# ---------------------------------------------------------------------------
+@app.post("/api/node/status")
+async def node_update_status(request: Request, authorization: str = Header(None)):
+    """Worker reports: idle/testing, current_chunk/total_chunks, generation_id."""
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    body = await request.json()
+    node_id = body.get("node_id")
+    status = body.get("status", "idle")
+    current_chunk = body.get("current_chunk", 0)
+    total_chunks = body.get("total_chunks", 0)
+    testing_gen_id = body.get("generation_id", "")
+
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+
+    now = datetime.now(timezone.utc).isoformat()
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        node.status = status
+        node.current_chunk = current_chunk
+        node.total_chunks = total_chunks
+        node.testing_generation_id = testing_gen_id
+        node.last_heartbeat = now
+        node.is_online = True
+        session.add(node)
+        session.commit()
+
+    logger.debug(f"Node {node_id} status: {status}, chunk {current_chunk}/{total_chunks}")
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# NODE STATE — worker fetches its own state on startup (crash recovery)
+# ---------------------------------------------------------------------------
+@app.get("/api/node/state")
+async def node_get_state(node_id: int = Query(...), authorization: str = Header(None)):
+    """Worker fetches its saved state to resume after crash."""
+    if not _verify_node_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        settings = session.exec(select(Settings)).first()
+        return {
+            "status": node.status,
+            "current_chunk": node.current_chunk,
+            "total_chunks": node.total_chunks,
+            "testing_generation_id": node.testing_generation_id,
+            "chunk_size": settings.chunk_size if settings else 0,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -69,13 +69,15 @@ class NodeApp:
     def __init__(self):
         self.master_url = config.master_url.rstrip("/")
         self.node_id = None
-        self.last_run_id = None  # Track the master's proxy list version
         self.last_test_completed_at = None  # When the last test cycle finished
         self.last_schedule_interval = 0  # Last known schedule interval from master
         self.chunk_size = 0  # Chunk size from master (0 = disabled)
         self.generation_id = None  # Current generation_id from master
         self.last_generation_id = None  # Previous generation_id (to detect new cycle)
-        self.chunk_offset = 0  # Current offset for chunked requests
+        # Worker-side chunking state
+        self.total_chunks = 0
+        self.current_chunk = 0
+        self._already_active = False  # set True when master reports duplicate
         self.http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
@@ -148,7 +150,17 @@ class NodeApp:
                 if resp.status_code == 200:
                     data = resp.json()
                     self.node_id = data.get("node_id")
+                    reg_status = data.get("status", "")
+                    if reg_status == "already_active":
+                        logger.warning(
+                            f"Another instance of this node is already active (node_id={self.node_id}). "
+                            f"Will wait and retry. This worker will NOT start testing."
+                        )
+                        self._already_active = True
+                        self.node_id = None  # Don't register as active — we're a duplicate
+                        return True  # registered but flagged as duplicate
                     logger.info(f"Registered successfully! Node ID: {self.node_id}")
+                    self._already_active = False
                     return True
                 else:
                     logger.error(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
@@ -185,26 +197,62 @@ class NodeApp:
             logger.error(f"Error fetching config: {repr(e)}")
             return None
 
-    async def get_proxies(self, offset: int = 0, limit: int = 0):
-        """Fetch raw proxies and run_id from master. Returns (run_id, proxy_list, has_more, total)."""
+    async def get_all_proxies(self):
+        """Fetch ALL proxies from master (full=true mode).
+        Returns (run_id, proxy_list, total, chunk_size)."""
         try:
-            params = {}
-            if offset > 0:
-                params["offset"] = offset
-            if limit > 0:
-                params["limit"] = limit
-            resp = await self.http_client.get(f"{self.master_url}/api/node/proxies", params=params if params else None)
+            resp = await self.http_client.get(
+                f"{self.master_url}/api/node/proxies",
+                params={"full": "true"}
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 run_id = data.get("run_id", "unknown")
                 proxies = data.get("proxies", [])
-                has_more = data.get("has_more", False)
                 total = data.get("total", 0)
-                return run_id, proxies, has_more, total
-            return None, [], False, 0
+                chunk_size = data.get("chunk_size", 0)
+                return run_id, proxies, total, chunk_size
+            logger.error(f"get_all_proxies failed: HTTP {resp.status_code}")
+            return None, [], 0, 0
         except Exception as e:
-            logger.error(f"Error fetching proxies: {repr(e)}")
-            return None, [], False, 0
+            logger.error(f"Error fetching all proxies: {repr(e)}")
+            return None, [], 0, 0
+
+    async def report_status(self, status: str, current_chunk: int, total_chunks: int, generation_id: str):
+        """Report testing progress to master."""
+        if not self.node_id:
+            return False
+        try:
+            resp = await self.http_client.post(
+                f"{self.master_url}/api/node/status",
+                json={
+                    "node_id": self.node_id,
+                    "status": status,
+                    "current_chunk": current_chunk,
+                    "total_chunks": total_chunks,
+                    "generation_id": generation_id,
+                }
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.error(f"Error reporting status: {repr(e)}")
+            return False
+
+    async def get_node_state(self):
+        """Fetch current node state from master (for crash recovery)."""
+        if not self.node_id:
+            return None
+        try:
+            resp = await self.http_client.get(
+                f"{self.master_url}/api/node/state",
+                params={"node_id": self.node_id}
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching node state: {repr(e)}")
+            return None
 
     async def report_results(self, results, checked_count: int = 0, is_partial: bool = False):
         if not self.node_id:
@@ -228,7 +276,12 @@ class NodeApp:
             return False
 
     async def run_testing_cycle(self):
-        # 1. Get test config from master
+        # 1. Check if this worker is flagged as duplicate by master
+        if self._already_active:
+            logger.warning("Another instance is active. Skipping test cycle.")
+            return
+
+        # 2. Get test config from master
         test_config = await self.get_test_config()
         if not test_config:
             logger.warning("Could not fetch test config, skipping cycle.")
@@ -252,61 +305,113 @@ class NodeApp:
         # Update the known schedule interval from master
         self.last_schedule_interval = schedule_interval
 
-        # Check if generation_id changed (new scheduler cycle) - reset state BEFORE schedule check
-        # This ensures manual "Fetch Proxies" triggers immediate re-test even when schedule is active
-        if self.generation_id and self.generation_id != self.last_generation_id:
-            logger.info(f"New generation detected: {self.generation_id} (previous: {self.last_generation_id}). Resetting chunk offset and bypassing schedule wait.")
-            self.last_run_id = None  # Reset run_id cache to force re-check
-            self.chunk_offset = 0
+        # 3. Check if generation_id changed (new fetch cycle) - reset state BEFORE schedule check
+        is_new_generation = (
+            self.generation_id is not None and
+            self.generation_id != self.last_generation_id
+        )
+
+        if is_new_generation:
+            logger.info(f"New generation detected: {self.generation_id} "
+                        f"(previous: {self.last_generation_id}). "
+                        f"Resetting state and bypassing schedule wait.")
             self.last_generation_id = self.generation_id
-            # Reset last_test_completed_at to bypass schedule wait - manual fetch should trigger immediate test
+            # Reset last_test_completed_at to bypass schedule wait
             self.last_test_completed_at = None
 
-        # Check if we should wait before running next cycle
-        if self._should_wait_for_schedule():
+        # 4. Schedule guard: skip if interval hasn't elapsed (only for non-new generations)
+        if not is_new_generation and self._should_wait_for_schedule():
             remaining = self._get_remaining_wait_seconds()
             remaining_min = remaining / 60
             logger.info(f"Schedule interval not elapsed yet. Next test in {remaining_min:.0f}min. Skipping cycle.")
             return
 
-        # Use chunking if enabled (chunk_size > 0)
-        if self.chunk_size > 0:
-            await self._run_chunked_testing(test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval)
-        else:
-            # Original non-chunked behavior
-            await self._run_full_testing(test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval)
+        # 5. Crash recovery: check if we have a saved state on master
+        start_chunk = 0
+        if is_new_generation:
+            state = await self.get_node_state()
+            if state:
+                master_status = state.get("status", "idle")
+                master_gen = state.get("testing_generation_id", "")
+                master_chunk = state.get("current_chunk", 0)
+                master_chunks = state.get("total_chunks", 0)
 
-        # Update last test completion time
+                # Skip entirely if this generation was already completed.
+                # The node has finished all chunks and is idle — no need to re-test.
+                if (master_status == "idle" and
+                    master_gen == self.generation_id and
+                    master_chunks > 0):
+                    logger.info(f"Generation {self.generation_id} already completed "
+                               f"({master_chunks} chunks). Skipping test.")
+                    self.last_generation_id = self.generation_id
+                    self.last_test_completed_at = datetime.now(timezone.utc)
+                    return
+
+                # Resume if generation was in progress and not yet finished.
+                if (master_status == "testing" and
+                    master_gen == self.generation_id and
+                    master_chunk < master_chunks):
+                    start_chunk = master_chunk  # resume from next chunk after the one we were on
+                    logger.info(f"Crash recovery: resuming from chunk {start_chunk + 1}/{master_chunks} "
+                                f"(was on chunk {master_chunk})")
+
+        # 6. Run worker-side chunked testing
+        await self._run_chunked_testing(
+            test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval, start_chunk
+        )
+
+        # 7. Update last test completion time
         self.last_test_completed_at = datetime.now(timezone.utc)
 
-    async def _run_chunked_testing(self, test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval):
-        """Run testing in chunks for dynamic rating updates."""
+    async def _run_chunked_testing(
+        self, test_urls, ping_thresh, http_timeout, concurrent,
+        speed_top_n, schedule_interval, start_chunk: int = 0
+    ):
+        """Fetch ALL proxies once, slice into chunks locally, test & report each chunk.
+
+        Args:
+            start_chunk: 0 = start from beginning; N > 0 = resume from chunk N+1
+                         (used for crash recovery after reading master state).
+        """
         from tester import run_proxy_checks
         from speed_tester import _measure_speed, _compute_speed_score
 
-        total_proxies_checked = 0
-        total_proxies_passed = 0
+        # Fetch all proxies at once
+        run_id, all_urls, total, chunk_size = await self.get_all_proxies()
+        if not all_urls:
+            logger.info("No proxies available from master. Idling.")
+            await self.report_status("idle", 0, 0, self.generation_id)
+            return
 
-        while True:
-            # Fetch current chunk
-            run_id, raw_urls, has_more, total = await self.get_proxies(offset=self.chunk_offset, limit=self.chunk_size)
-            logger.info(f"Chunk {self.chunk_offset // self.chunk_size + 1}: offset={self.chunk_offset}, count={len(raw_urls)}, has_more={has_more}, total={total}")
+        # If chunk_size is 0, treat the whole list as a single chunk
+        if chunk_size <= 0:
+            chunk_size = len(all_urls)
 
-            if not raw_urls:
-                logger.info(f"No more proxies to check at offset {self.chunk_offset}. Chunking complete.")
-                break
+        # Build local chunk list
+        chunks = [
+            all_urls[i:i + chunk_size]
+            for i in range(0, len(all_urls), chunk_size)
+        ]
+        total_chunks = len(chunks)
+        logger.info(
+            f"Worker-side chunking: {len(all_urls)} proxies, "
+            f"chunk_size={chunk_size}, total_chunks={total_chunks}, "
+            f"start_chunk={start_chunk}, run_id={run_id}"
+        )
 
-            # Skip if run_id hasn't changed (same proxies already tested in this generation)
-            if run_id == self.last_run_id:
-                logger.info(f"Proxies (run_id={run_id}) already tested in this generation. Skipping chunk.")
-                self.chunk_offset += len(raw_urls)
-                if not has_more:
-                    break
-                continue
+        total_checked = 0
+        total_passed = 0
 
-            logger.info(f"Testing {len(raw_urls)} proxies in chunk (run_id={run_id})...")
+        # Report initial status: testing from start_chunk (0-indexed, +1 for display)
+        await self.report_status("testing", start_chunk + 1, total_chunks, self.generation_id)
 
-            # Test proxies in this chunk
+        for idx in range(start_chunk, total_chunks):
+            raw_urls = chunks[idx]
+            chunk_num = idx + 1  # 1-indexed for display
+
+            logger.info(f"Testing chunk {chunk_num}/{total_chunks} "
+                        f"({len(raw_urls)} proxies, offset={idx * chunk_size})...")
+
             status_dict = {
                 "running": True,
                 "current_phase": "checking",
@@ -321,9 +426,9 @@ class NodeApp:
                 singbox_path=config.singbox_path,
             )
 
-            total_proxies_checked += status_dict["checked"]
-            total_proxies_passed += status_dict["passed"]
-            logger.info(f"Chunk results: {status_dict['passed']} passed, {status_dict['failed']} failed")
+            total_checked += status_dict["checked"]
+            total_passed += status_dict["passed"]
+            logger.info(f"Chunk {chunk_num}: {status_dict['passed']} passed, {status_dict['failed']} failed")
 
             # Build results for all tested proxies
             all_tested_results = []
@@ -356,171 +461,64 @@ class NodeApp:
             # Compute baseline speed scores
             for r in all_tested_results:
                 r["speed_score"] = _compute_speed_score(
-                    r["ping_ms"], r["tests_passed"], r["download_speed_kbps"], r["upload_speed_kbps"]
+                    r["ping_ms"], r["tests_passed"],
+                    r["download_speed_kbps"], r["upload_speed_kbps"]
                 )
 
             # Optional speed testing for top N proxies in chunk
             if speed_top_n > 0 and valid_proxies:
                 to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
-                chunk_total = len(valid_proxies)
                 speed_sem = asyncio.Semaphore(2)
                 counter_lock = asyncio.Lock()
                 done = 0
 
-                logger.info(f"Running speed tests for top {len(to_test)} proxies in chunk...")
+                logger.info(f"Speed tests for top {len(to_test)} proxies in chunk...")
 
-                async def _speed_one(p):
+                async def _speed_one(p: object):
                     nonlocal done
                     async with speed_sem:
                         result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
+                        speed_score = 0.0
+                        dl, ul = 0, 0
                         if result:
                             dl, ul = result
                             p.download_speed_kbps = dl
                             p.upload_speed_kbps = ul
-                            p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
-                            async with counter_lock:
-                                done += 1
-                                logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f} ({done}/{chunk_total})")
-                            for r in all_tested_results:
-                                if r["raw_url"] == p.raw_url:
-                                    r["download_speed_kbps"] = dl
-                                    r["upload_speed_kbps"] = ul
-                                    r["speed_score"] = p.speed_score
-                                    break
+                            speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
+                            p.speed_score = speed_score
                         else:
-                            p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
-                            async with counter_lock:
-                                done += 1
-
-                await asyncio.gather(*[_speed_one(p) for p in to_test])
-
-            # Report results as partial (upsert instead of full replace)
-            reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"], is_partial=True)
-            if reported:
-                logger.info(f"Reported chunk results (is_partial=True). Offset now at {self.chunk_offset + len(raw_urls)}")
-            else:
-                logger.warning(f"Failed to report chunk results, but continuing to next chunk.")
-
-            # Update run_id after successfully testing this chunk
-            self.last_run_id = run_id
-
-            # Move to next chunk
-            self.chunk_offset += len(raw_urls)
-
-            if not has_more:
-                logger.info(f"All chunks processed. Total: {total_proxies_checked} checked, {total_proxies_passed} passed.")
-                break
-
-        # Final status
-        next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
-        logger.info(f"Chunked testing complete. Checked {total_proxies_checked}, passed {total_proxies_passed}.{next_in}")
-
-    async def _run_full_testing(self, test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval):
-        """Original non-chunked testing logic."""
-        from tester import run_proxy_checks
-        from speed_tester import _measure_speed, _compute_speed_score
-
-        run_id, raw_urls, has_more, total = await self.get_proxies()
-        logger.info(f"Fetched proxies: run_id={run_id}, last_run_id={self.last_run_id}, count={len(raw_urls)}, schedule_interval={schedule_interval}min")
-        if not raw_urls:
-            logger.info("No proxies available from master. Idling.")
-            return
-
-        if run_id == self.last_run_id:
-            logger.info(f"Proxies (run_id={run_id}) haven't changed since last test. Skipping cycle.")
-            return
-
-        logger.info(f"Starting tests with {len(raw_urls)} proxies (run_id={run_id})...")
-
-        status_dict = {
-            "running": True,
-            "current_phase": "checking",
-            "checked": 0,
-            "total": len(raw_urls),
-            "passed": 0,
-            "failed": 0,
-        }
-
-        valid_proxies = await run_proxy_checks(
-            raw_urls, test_urls, ping_thresh, http_timeout, concurrent, status_dict,
-            singbox_path=config.singbox_path,
-        )
-
-        logger.info(f"Proxy checks done: {status_dict['passed']} passed, {status_dict['failed']} failed out of {status_dict['checked']} checked.")
-
-        all_tested_results = []
-        passed_urls = set()
-
-        for p in valid_proxies:
-            passed_urls.add(p.raw_url)
-            all_tested_results.append({
-                "raw_url": p.raw_url,
-                "ping_ms": p.ping_ms,
-                "tests_passed": p.tests_passed,
-                "tests_total": p.tests_total,
-                "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
-                "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
-                "speed_score": getattr(p, "speed_score", 0.0),
-            })
-
-        for url in raw_urls:
-            if url not in passed_urls:
-                all_tested_results.append({
-                    "raw_url": url,
-                    "ping_ms": 0,
-                    "tests_passed": 0,
-                    "tests_total": len(test_urls),
-                    "download_speed_kbps": 0,
-                    "upload_speed_kbps": 0,
-                    "speed_score": 0.0,
-                })
-
-        for r in all_tested_results:
-            r["speed_score"] = _compute_speed_score(
-                r["ping_ms"], r["tests_passed"], r["download_speed_kbps"], r["upload_speed_kbps"]
-            )
-
-        if speed_top_n > 0 and valid_proxies:
-            to_test = sorted(valid_proxies, key=lambda p: (-p.tests_passed, p.ping_ms))[:speed_top_n]
-            total = len(valid_proxies)
-            speed_sem = asyncio.Semaphore(2)
-            counter_lock = asyncio.Lock()
-            done = 0
-
-            logger.info(f"Running speed tests for top {len(to_test)} proxies (multi-stream, total={total})...")
-
-            async def _speed_one(p):
-                nonlocal done
-                async with speed_sem:
-                    result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
-                    if result:
-                        dl, ul = result
-                        p.download_speed_kbps = dl
-                        p.upload_speed_kbps = ul
-                        p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, dl, ul)
+                            speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
+                            p.speed_score = speed_score
                         async with counter_lock:
                             done += 1
-                            logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s Score={p.speed_score:.0f} ({done}/{total})")
+                            logger.info(f"⚡ Speed [{p.ping_ms}ms] DL={dl}KB/s UL={ul}KB/s "
+                                        f"Score={speed_score:.0f} ({done}/{len(to_test)})")
                         for r in all_tested_results:
                             if r["raw_url"] == p.raw_url:
                                 r["download_speed_kbps"] = dl
                                 r["upload_speed_kbps"] = ul
-                                r["speed_score"] = p.speed_score
+                                r["speed_score"] = speed_score
                                 break
-                    else:
-                        p.speed_score = _compute_speed_score(p.ping_ms, p.tests_passed, 0, 0)
-                        async with counter_lock:
-                            done += 1
 
-            await asyncio.gather(*[_speed_one(p) for p in to_test])
+                await asyncio.gather(*[_speed_one(p) for p in to_test])
 
-        self.last_run_id = run_id
-        reported = await self.report_results(all_tested_results, checked_count=status_dict["checked"], is_partial=False)
-        if reported:
-            next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
-            logger.info(f"Saved run_id={run_id}. Will idle until master produces a new proxy list.{next_in}")
-        else:
-            logger.warning(f"Failed to report results for run_id={run_id}, but saved run_id to avoid immediate re-testing.")
+            # Report results for this chunk
+            reported = await self.report_results(
+                all_tested_results, checked_count=status_dict["checked"], is_partial=True
+            )
+            if reported:
+                logger.info(f"Reported chunk {chunk_num} results (is_partial=True)")
+            else:
+                logger.warning(f"Failed to report chunk {chunk_num} results, continuing anyway.")
+
+            # Report progress after each chunk
+            await self.report_status("testing", chunk_num, total_chunks, self.generation_id)
+
+        # All chunks done — report idle
+        await self.report_status("idle", total_chunks, total_chunks, self.generation_id)
+
+        next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
+        logger.info(f"Chunked testing complete. {total_checked} checked, {total_passed} passed.{next_in}")
 
     async def log_sender_loop(self):
         while True:
@@ -558,25 +556,40 @@ class NodeApp:
 async def main():
     logger.info("Initializing VPN Checker Worker Node...")
     app = NodeApp()
-    
+
     # Start the log sender loop in the background
     app._log_task = asyncio.create_task(app.log_sender_loop())
-    
+
     # Start the heartbeat loop in the background (keeps node online during testing)
     app._heartbeat_task = asyncio.create_task(app._heartbeat_loop())
-    
+
     while True:
         try:
-            logger.debug("Waking up for check-in...")
-            # Always register/re-register to keep heartbeat alive
-            await app.register()
-                
+            # Register only once (on first iteration) or after a failed registration.
+            # Do NOT re-register on every wake-up — that was the root cause of the wl bug.
+            if app.node_id is None:
+                await app.register()
+                if app.node_id is None:
+                    # Registration failed — wait and retry
+                    await asyncio.sleep(config.poll_interval_s)
+                    continue
+
+            if app._already_active:
+                # Another instance is active — wait and check again
+                logger.debug("Waiting because another instance is active...")
+                await asyncio.sleep(config.poll_interval_s)
+                # Reset flag AND node_id so we re-register and re-check status
+                app._already_active = False
+                app.node_id = None
+                continue
+
             if app.node_id:
                 await app.run_testing_cycle()
-                
+
         except Exception as e:
             logger.error(f"Unhandled error in main loop: {repr(e)}")
-            
+            app.node_id = None  # Force re-register on next iteration
+
         # Use schedule-aware sleep: if we know the schedule interval,
         # sleep in chunks but don't exceed the remaining wait time
         remaining = app._get_remaining_wait_seconds()

@@ -129,6 +129,11 @@ class Node(SQLModel, table=True):
     proxies_checked: int = Field(default=0)
     proxies_passed: int = Field(default=0)
     registered_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # Worker-side chunking: status tracking
+    status: str = Field(default="idle")            # "idle" | "testing"
+    current_chunk: int = Field(default=0)          # 1-indexed: which chunk worker is testing now
+    total_chunks: int = Field(default=0)           # total chunks for current test run
+    testing_generation_id: str = Field(default="")  # which generation_id the worker is testing
 
 
 class NodeProxyResult(SQLModel, table=True):
@@ -209,6 +214,19 @@ def _migrate_db():
         if "retention_cycles" not in raw_existing:
             conn.execute("ALTER TABLE raw_proxies ADD COLUMN retention_cycles INTEGER DEFAULT 0")
         
+        # Node migrations (new fields for worker-side chunking status tracking)
+        cursor = conn.execute("PRAGMA table_info(nodes)")
+        node_existing = {row[1] for row in cursor.fetchall()}
+        node_migrations = [
+            ("status", "TEXT DEFAULT 'idle'"),
+            ("current_chunk", "INTEGER DEFAULT 0"),
+            ("total_chunks", "INTEGER DEFAULT 0"),
+            ("testing_generation_id", "TEXT DEFAULT ''"),
+        ]
+        for col_name, col_def in node_migrations:
+            if col_name not in node_existing:
+                conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_def}")
+
         conn.commit()
         conn.close()
 

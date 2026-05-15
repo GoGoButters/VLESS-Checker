@@ -40,7 +40,7 @@
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {% for node in nodes %}
         <div class="glass p-6 rounded-2xl relative overflow-hidden group">
-            <div class="absolute top-0 left-0 w-full h-1 {% if node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
+            <div class="absolute top-0 left-0 w-full h-1 {% if node.status == 'testing' %}bg-indigo-500{% elif node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
             
             <div class="flex justify-between items-start mb-4">
                 <div>
@@ -49,8 +49,15 @@
                     </h3>
                     <div class="text-sm text-slate-400 font-medium">📍 {{ node.region }}</div>
                 </div>
-                <span class="px-2.5 py-1 rounded-full text-xs font-semibold {% if node.is_online %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-rose-500/10 text-rose-400 border border-rose-500/20{% endif %}">
-                    {% if node.is_online %}{{ t(request, 'nodes_online', default='ONLINE') }}{% else %}{{ t(request, 'nodes_offline', default='OFFLINE') }}{% endif %}
+                <span class="px-2.5 py-1 rounded-full text-xs font-semibold
+                    {% if node.status == 'testing' %}
+                        bg-indigo-500/10 text-indigo-400 border border-indigo-500/20
+                    {% elif node.is_online %}
+                        bg-emerald-500/10 text-emerald-400 border border-emerald-500/20
+                    {% else %}
+                        bg-rose-500/10 text-rose-400 border border-rose-500/20
+                    {% endif %}">
+                    {% if node.status == 'testing' %}TESTING{% elif node.is_online %}ONLINE{% else %}OFFLINE{% endif %}
                 </span>
             </div>
 
@@ -77,6 +84,21 @@
                     <span class="text-slate-400">{{ t(request, 'nodes_passed', default='Passed Proxies:') }}</span>
                     <span class="text-emerald-400 font-semibold">{{ node.proxies_passed }}</span>
                 </div>
+                {% if node.status == 'testing' and node.total_chunks > 0 %}
+                <div class="mt-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-indigo-400 font-medium">
+                            Testing chunk {{ node.current_chunk }}/{{ node.total_chunks }}
+                        </span>
+                        <span class="text-indigo-300">{{ ((node.current_chunk / node.total_chunks) * 100)|round|int }}%</span>
+                    </div>
+                    <div class="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden">
+                        <div class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2 rounded-full transition-all duration-500 animate-pulse"
+                             style="width: {{ ((node.current_chunk / node.total_chunks) * 100)|round|int }}%">
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
             </div>
 
             <div class="flex gap-2">
