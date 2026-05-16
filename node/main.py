@@ -74,6 +74,7 @@ class NodeApp:
         self.chunk_size = 0  # Chunk size from master (0 = disabled)
         self.generation_id = None  # Current generation_id from master
         self.last_generation_id = None  # Previous generation_id (to detect new cycle)
+        self.force_test = False  # Manual force-test trigger from master
         # Worker-side chunking state
         self.total_chunks = 0
         self.current_chunk = 0
@@ -185,12 +186,19 @@ class NodeApp:
 
     async def get_test_config(self):
         try:
-            resp = await self.http_client.get(f"{self.master_url}/api/node/config")
+            params = {}
+            if self.node_id:
+                params["node_id"] = self.node_id
+            resp = await self.http_client.get(
+                f"{self.master_url}/api/node/config",
+                params=params
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 # Store chunk_size and generation_id for chunking logic
                 self.chunk_size = data.get("chunk_size", 0)
                 self.generation_id = data.get("generation_id")
+                self.force_test = data.get("force_test", False)
                 return data
             return None
         except Exception as e:
@@ -319,7 +327,13 @@ class NodeApp:
             # Reset last_test_completed_at to bypass schedule wait
             self.last_test_completed_at = None
 
-        # 4. Schedule guard: skip if interval hasn't elapsed (only for non-new generations)
+        # 4. Manual force-test trigger: bypass schedule wait
+        if self.force_test:
+            logger.info("Force test triggered by master. Bypassing schedule wait.")
+            self.last_test_completed_at = None
+            self.force_test = False
+
+        # 5. Schedule guard: skip if interval hasn't elapsed (only for non-new generations, non-forced)
         if not is_new_generation and self._should_wait_for_schedule():
             remaining = self._get_remaining_wait_seconds()
             remaining_min = remaining / 60

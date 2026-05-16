@@ -740,6 +740,25 @@ async def delete_node(request: Request, node_id: int):
     return RedirectResponse("/nodes", status_code=302)
 
 
+@app.post("/api/node/{node_id}/force-test")
+async def force_node_test(request: Request, node_id: int):
+    """Trigger a manual test run on a specific node."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    with Session(engine) as session:
+        node = session.get(Node, node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        node.force_test = True
+        # Reset counters for the new test run
+        node.proxies_checked = 0
+        node.proxies_passed = 0
+        session.add(node)
+        session.commit()
+    return {"status": "ok"}
+
+
 # ---------------------------------------------------------------------------
 # NODE API — Bearer Token Auth
 # ---------------------------------------------------------------------------
@@ -806,13 +825,18 @@ async def node_register(request: Request, authorization: str = Header(None)):
 
 
 @app.get("/api/node/config")
-async def node_get_config(authorization: str = Header(None)):
+async def node_get_config(authorization: str = Header(None), node_id: int = Query(default=0)):
     if not _verify_node_token(authorization):
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    force_test = False
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
         test_urls = session.exec(select(TestUrl).order_by(TestUrl.position)).all()
+        if node_id > 0:
+            node = session.get(Node, node_id)
+            if node:
+                force_test = node.force_test
 
     return {
         "ping_threshold_ms": settings.ping_threshold_ms if settings else 1000,
@@ -822,6 +846,7 @@ async def node_get_config(authorization: str = Header(None)):
         "schedule_interval_minutes": settings.schedule_interval_minutes if settings else 0,
         "chunk_size": settings.chunk_size if settings and settings.chunk_size else 0,
         "generation_id": generation_id,
+        "force_test": force_test,
         "test_urls": [
             {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
             for t in test_urls
@@ -976,8 +1001,20 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
             else:
                 failed_urls.append(r.get("raw_url", ""))
 
-        node.proxies_checked = body.get("checked_count", len(results))
-        node.proxies_passed = passed
+        # Recalculate counters from DB — correctly accumulates across partial chunks
+        total_checked = session.exec(
+            select(func.count()).select_from(NodeProxyResult).where(
+                NodeProxyResult.node_id == node_id
+            )
+        ).one()
+        total_passed = session.exec(
+            select(func.count()).select_from(NodeProxyResult).where(
+                NodeProxyResult.node_id == node_id,
+                NodeProxyResult.tests_passed > 0
+            )
+        ).one()
+        node.proxies_checked = total_checked
+        node.proxies_passed = total_passed
         node.last_heartbeat = now
         node.is_online = True
         # Mark node idle when full result set is reported (testing cycle complete)
@@ -1275,6 +1312,9 @@ async def node_update_status(request: Request, authorization: str = Header(None)
         node.current_chunk = current_chunk
         node.total_chunks = total_chunks
         node.testing_generation_id = testing_gen_id
+        # Reset force_test flag when node starts testing
+        if status == "testing" and node.force_test:
+            node.force_test = False
         node.last_heartbeat = now
         node.is_online = True
         session.add(node)

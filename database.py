@@ -134,6 +134,7 @@ class Node(SQLModel, table=True):
     current_chunk: int = Field(default=0)          # 1-indexed: which chunk worker is testing now
     total_chunks: int = Field(default=0)           # total chunks for current test run
     testing_generation_id: str = Field(default="")  # which generation_id the worker is testing
+    force_test: bool = Field(default=False)        # manual trigger to bypass schedule guard
 
 
 class NodeProxyResult(SQLModel, table=True):
@@ -222,6 +223,7 @@ def _migrate_db():
             ("current_chunk", "INTEGER DEFAULT 0"),
             ("total_chunks", "INTEGER DEFAULT 0"),
             ("testing_generation_id", "TEXT DEFAULT ''"),
+            ("force_test", "INTEGER DEFAULT 0"),
         ]
         for col_name, col_def in node_migrations:
             if col_name not in node_existing:
