@@ -271,7 +271,8 @@ class NodeApp:
                 "node_id": self.node_id,
                 "results": results,
                 "checked_count": checked_count,
-                "is_partial": is_partial
+                "is_partial": is_partial,
+                "generation_id": self.generation_id
             })
             if resp.status_code == 200:
                 logger.info(f"Successfully reported {len(results)} results (out of {checked_count} checked) to master. is_partial={is_partial}")

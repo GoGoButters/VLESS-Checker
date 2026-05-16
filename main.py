@@ -807,6 +807,18 @@ async def node_register(request: Request, authorization: str = Header(None)):
             existing.region = region
             existing.is_online = True
             existing.last_heartbeat = datetime.now(timezone.utc).isoformat()
+
+            # Reset results from previous worker instance to prevent
+            # stale counters on restart
+            session.exec(
+                delete(NodeProxyResult).where(
+                    NodeProxyResult.node_id == existing.id
+                )
+            )
+            existing.proxies_checked = 0
+            existing.proxies_passed = 0
+            existing.testing_generation_id = ""
+
             session.add(existing)
             session.commit()
             return {"status": "updated", "node_id": existing.id}
@@ -957,6 +969,7 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
     node_id = body.get("node_id")
     results = body.get("results", [])
     is_partial = body.get("is_partial", False)
+    generation_id = body.get("generation_id", "")
 
     if not node_id:
         raise HTTPException(status_code=400, detail="node_id required")
@@ -968,6 +981,27 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
         node = session.get(Node, node_id)
         if not node:
             raise HTTPException(status_code=404, detail="Node not found")
+
+        # Detect generation change: wipe ALL old results for this node
+        # before accepting data from the new generation.
+        # This prevents stale rows from previous fetch cycles from
+        # inflating proxies_checked/proxies_passed counters.
+        if generation_id and generation_id != node.testing_generation_id:
+            logger.info(
+                f"Node {node_id}: generation changed "
+                f"('{node.testing_generation_id}' -> '{generation_id}'), "
+                f"wiping all old results."
+            )
+            session.exec(
+                delete(NodeProxyResult).where(
+                    NodeProxyResult.node_id == node_id
+                )
+            )
+            node.testing_generation_id = generation_id
+            node.proxies_checked = 0
+            node.proxies_passed = 0
+            # Force full clear even for this chunk — old data is gone
+            is_partial = False
 
         # Clear old results: if partial, only delete for proxies in this chunk
         if is_partial and chunk_urls:

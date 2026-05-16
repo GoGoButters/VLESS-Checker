@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text, event
-from sqlmodel import Field, SQLModel, create_engine, Session
+from sqlmodel import Field, SQLModel, create_engine, Session, UniqueConstraint
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
 
@@ -140,6 +140,9 @@ class Node(SQLModel, table=True):
 class NodeProxyResult(SQLModel, table=True):
     """Proxy results from a specific node."""
     __tablename__ = "node_proxy_results"
+    __table_args__ = (
+        UniqueConstraint("node_id", "raw_url", name="uq_node_proxy"),
+    )
     id: Optional[int] = Field(default=None, primary_key=True)
     node_id: int = Field(index=True)
     raw_url: str = Field(index=True)
@@ -228,6 +231,28 @@ def _migrate_db():
         for col_name, col_def in node_migrations:
             if col_name not in node_existing:
                 conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_def}")
+
+        # NodeProxyResult: deduplicate before adding unique constraint
+        try:
+            conn.execute("""
+                DELETE FROM node_proxy_results
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM node_proxy_results
+                    GROUP BY node_id, raw_url
+                )
+            """)
+        except Exception:
+            pass  # Table doesn't exist yet
+
+        # NodeProxyResult: add unique constraint on (node_id, raw_url)
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_proxy "
+                "ON node_proxy_results (node_id, raw_url)"
+            )
+        except Exception:
+            pass  # Index already exists or table doesn't exist yet
 
         conn.commit()
         conn.close()
