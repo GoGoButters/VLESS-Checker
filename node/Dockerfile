@@ -16,11 +16,13 @@ RUN wget -qO /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases
 
 WORKDIR /app
 
-# Copy root requirements (master uses basically the same)
-COPY requirements.txt /app/
-
-# Install node reqs
+# Copy and install root requirements (shared deps like httpx, proxy_parsers etc.)
+COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy and install node-specific requirements (pydantic-settings etc.)
+COPY node/requirements.txt /app/node-requirements.txt
+RUN pip install --no-cache-dir -r /app/node-requirements.txt
 
 # Copy all parent files since we share proxy_parsers and tester logic
 COPY . /app/

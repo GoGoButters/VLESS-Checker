@@ -12,8 +12,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import config after path setup
 try:
     from config import config
-except ImportError:
-    print("CRITICAL: Could not import config. Check if node/config.py exists.", file=sys.stderr, flush=True)
+except Exception as e:
+    import traceback
+    print(f"CRITICAL: Could not import config. Exception: {e}", file=sys.stderr, flush=True)
+    print(f"CWD: {os.getcwd()}", file=sys.stderr, flush=True)
+    print(f"sys.path: {sys.path}", file=sys.stderr, flush=True)
+    print(f"Files in CWD: {os.listdir('.')}", file=sys.stderr, flush=True)
+    traceback.print_exc()
     sys.exit(1)
 
 # Configure logging IMMEDIATELY to catch early issues
