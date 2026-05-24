@@ -64,9 +64,7 @@ def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
             }
         ],
         "outbounds": [
-            outbound,
-            {"type": "direct", "tag": "direct"},
-            {"type": "block", "tag": "block"}
+            outbound
         ]
     }
 

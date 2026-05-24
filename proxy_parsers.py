@@ -66,6 +66,9 @@ def _parse_vless(url: str) -> dict | None:
             
         # Add uTLS for all TLS/Reality
         fp = qs.get("fp", [""])[0]
+        if security == "reality" and not fp:
+            fp = "chrome"
+            
         if fp:
             outbound["tls"]["utls"] = {
                 "enabled": True,
