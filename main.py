@@ -786,7 +786,6 @@ async def node_register(request: Request, authorization: str = Header(None)):
         existing = session.exec(select(Node).where(Node.name == name)).first()
         if existing:
             # Anti-duplicate: if another instance is still online and testing, reject
-            from datetime import datetime, timezone, timedelta
             stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=60)
             try:
                 hb = datetime.fromisoformat(existing.last_heartbeat) if existing.last_heartbeat else None
@@ -1179,8 +1178,6 @@ def _cleanup_stale_node_data(session) -> dict:
 
     Returns a dict with cleanup statistics for logging.
     """
-    from datetime import datetime, timezone, timedelta
-
     stale_threshold_dt = datetime.now(timezone.utc) - timedelta(minutes=30)
     stats = {
         "stale_marked": 0,
