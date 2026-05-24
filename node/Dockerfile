@@ -20,7 +20,6 @@ WORKDIR /app
 COPY requirements.txt /app/
 
 # Install node reqs
-RUN pip install --no-cache-dir httpx pydantic-settings
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all parent files since we share proxy_parsers and tester logic
