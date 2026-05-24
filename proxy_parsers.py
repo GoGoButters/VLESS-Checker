@@ -63,13 +63,18 @@ def _parse_vless(url: str) -> dict | None:
                 "public_key": qs.get("pbk", [""])[0],
                 "short_id": qs.get("sid", [""])[0]
             }
-            # Add uTLS
-            fp = qs.get("fp", ["chrome"])[0]
-            if fp:
-                outbound["tls"]["utls"] = {
-                    "enabled": True,
-                    "fingerprint": fp
-                }
+            
+        # Add uTLS for all TLS/Reality
+        fp = qs.get("fp", [""])[0]
+        if fp:
+            outbound["tls"]["utls"] = {
+                "enabled": True,
+                "fingerprint": fp
+            }
+            
+        alpn = qs.get("alpn", [""])[0]
+        if alpn:
+            outbound["tls"]["alpn"] = alpn.split(",")
                 
     flow = qs.get("flow", [""])[0]
     if flow:
@@ -126,6 +131,10 @@ def _parse_vmess(url: str) -> dict | None:
                 "fingerprint": fp
             }
             
+        alpn = v.get("alpn")
+        if alpn:
+            outbound["tls"]["alpn"] = str(alpn).split(",")
+            
     net = v.get("net", "tcp")
     if net == "ws":
         outbound["transport"] = {
@@ -163,6 +172,17 @@ def _parse_trojan(url: str) -> dict | None:
             "server_name": qs.get("sni", [""])[0] or parsed.hostname,
             "insecure": (qs.get("allowInsecure", ["0"])[0] == "1")
         }
+        
+        fp = qs.get("fp", [""])[0]
+        if fp:
+            outbound["tls"]["utls"] = {
+                "enabled": True,
+                "fingerprint": fp
+            }
+            
+        alpn = qs.get("alpn", [""])[0]
+        if alpn:
+            outbound["tls"]["alpn"] = alpn.split(",")
         
     net = qs.get("type", ["tcp"])[0]
     if net == "ws":

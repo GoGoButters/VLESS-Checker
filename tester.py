@@ -89,17 +89,10 @@ async def _check_single_proxy(
             test_status["failed"] += 1
             return None
 
-        # Step 1: TCP ping
+        # Skip raw TCP ping to avoid triggering active probe defenses
         target_host = parsed_outbound.get("server", "")
         target_port = parsed_outbound.get("server_port", 443)
-        ping = await _tcp_ping(target_host, target_port)
-        if ping is None or ping > ping_threshold:
-            test_status["checked"] += 1
-            test_status["failed"] += 1
-            logger.debug(
-                f"TCP ping failed/too slow for {target_host}:{target_port} ({ping}ms)"
-            )
-            return None
+        ping = 0  # We will rely on HTTP request time or sing-box stats instead, or just assume 0 for now.
 
         # Step 2: sing-box subprocess — run all test URL checks through the same proxy instance
         socks_port = _get_free_port()
@@ -246,14 +239,10 @@ async def _check_single_proxy_internal(
             status_ref["failed"] += 1
             return None
 
-        # Step 1: TCP ping
+        # Skip raw TCP ping to avoid triggering active probe defenses
         target_host = parsed_outbound.get("server", "")
         target_port = parsed_outbound.get("server_port", 443)
-        ping = await _tcp_ping(target_host, target_port)
-        if ping is None or ping > ping_threshold:
-            status_ref["checked"] += 1
-            status_ref["failed"] += 1
-            return None
+        ping = 0
 
         # Step 2: sing-box subprocess
         socks_port = _get_free_port()
