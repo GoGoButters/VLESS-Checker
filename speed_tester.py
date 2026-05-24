@@ -244,13 +244,12 @@ async def _measure_speed(proxy_url: str, timeout_s: int = 20) -> tuple[int, int]
 
 def _compute_speed_score(ping_ms: int, tests_passed: int, dl_kbps: int, ul_kbps: int) -> float:
     """Compute a composite speed score.
-    Speed (DL+UL) has 2x weight vs test pass count.
-    Lower ping is better — subtract a penalty.
+    Tests passed is the primary factor, followed by speed (DL+UL), and ping penalty.
     """
-    speed_component = (dl_kbps + ul_kbps) * 2.0
-    pass_component = tests_passed * 100.0
+    pass_component = tests_passed * 3000.0
+    speed_component = (dl_kbps + ul_kbps) * 1.0
     ping_penalty = ping_ms * 0.5
-    return max(0.0, speed_component + pass_component - ping_penalty)
+    return max(0.0, pass_component + speed_component - ping_penalty)
 
 
 async def run_speed_test(test_status: dict) -> None:
