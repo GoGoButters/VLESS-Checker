@@ -315,6 +315,7 @@ class NodeApp:
         concurrent = test_config.get("concurrent_checks_limit", config.concurrent_checks)
         speed_top_n = test_config.get("speed_test_top_n", 0)
         schedule_interval = test_config.get("schedule_interval_minutes", 0)
+        geo_check_enabled = test_config.get("geo_check_enabled", False)
 
         # Update the known schedule interval from master
         self.last_schedule_interval = schedule_interval
@@ -377,7 +378,8 @@ class NodeApp:
 
         # 6. Run worker-side chunked testing
         await self._run_chunked_testing(
-            test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval, start_chunk
+            test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval, start_chunk,
+            geo_check_enabled=geo_check_enabled,
         )
 
         # 7. Update last test completion time
@@ -385,7 +387,8 @@ class NodeApp:
 
     async def _run_chunked_testing(
         self, test_urls, ping_thresh, http_timeout, concurrent,
-        speed_top_n, schedule_interval, start_chunk: int = 0
+        speed_top_n, schedule_interval, start_chunk: int = 0,
+        geo_check_enabled: bool = False,
     ):
         """Fetch ALL proxies once, slice into chunks locally, test & report each chunk.
 
@@ -464,6 +467,7 @@ class NodeApp:
                     "download_speed_kbps": getattr(p, "download_speed_kbps", 0),
                     "upload_speed_kbps": getattr(p, "upload_speed_kbps", 0),
                     "speed_score": getattr(p, "speed_score", 0.0),
+                    "country_name": "",
                 })
 
             for url in raw_urls:
@@ -476,6 +480,7 @@ class NodeApp:
                         "download_speed_kbps": 0,
                         "upload_speed_kbps": 0,
                         "speed_score": 0.0,
+                        "country_name": "",
                     })
 
             # Compute baseline speed scores
@@ -521,6 +526,37 @@ class NodeApp:
                                 break
 
                 await asyncio.gather(*[_speed_one(p) for p in to_test])
+
+            # Optional geo check: detect country for all passing proxies
+            if geo_check_enabled and valid_proxies:
+                from geo_checker import detect_proxy_country
+                geo_sem = asyncio.Semaphore(3)
+                geo_done = 0
+                geo_lock = asyncio.Lock()
+
+                logger.info(f"🌍 Geo check for {len(valid_proxies)} passing proxies in chunk...")
+
+                async def _geo_one(p: object):
+                    nonlocal geo_done
+                    async with geo_sem:
+                        country = await detect_proxy_country(
+                            p.raw_url,
+                            timeout_s=max(http_timeout, 10),
+                            singbox_path=config.singbox_path,
+                        )
+                        async with geo_lock:
+                            geo_done += 1
+                            if country:
+                                logger.info(f"🌍 Geo [{geo_done}/{len(valid_proxies)}] {country}")
+                            else:
+                                logger.debug(f"🌍 Geo [{geo_done}/{len(valid_proxies)}] unknown")
+                        # Update the result dict
+                        for r in all_tested_results:
+                            if r["raw_url"] == p.raw_url:
+                                r["country_name"] = country
+                                break
+
+                await asyncio.gather(*[_geo_one(p) for p in valid_proxies])
 
             # Report results for this chunk
             reported = await self.report_results(

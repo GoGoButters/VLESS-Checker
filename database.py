@@ -116,6 +116,9 @@ class Settings(SQLModel, table=True):
     # Chunking: 0 = disabled (process all at once), N > 0 = process N proxies per chunk for dynamic rating updates
     chunk_size: int = Field(default=0)
 
+    # Geo check: if enabled, workers detect proxy country and rename remark to country name in Russian
+    geo_check_enabled: bool = Field(default=False)
+
 
 class Node(SQLModel, table=True):
     """Remote checker node registration."""
@@ -153,6 +156,7 @@ class NodeProxyResult(SQLModel, table=True):
     upload_speed_kbps: int = Field(default=0)
     speed_score: float = Field(default=0.0)
     last_tested: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    country_name: str = Field(default="")  # Detected country name in Russian (e.g. "США", "Германия")
 
 
 def create_db_and_tables():
@@ -193,6 +197,7 @@ def _migrate_db():
             ("good_proxy_retention_cycles", "INTEGER DEFAULT 3"),
             ("enabled_protocols", "TEXT DEFAULT '{\"vless\":true,\"vmess\":true,\"trojan\":true,\"ss\":true,\"hy2\":true,\"hysteria2\":true}'"),
             ("chunk_size", "INTEGER DEFAULT 0"),
+            ("geo_check_enabled", "INTEGER DEFAULT 0"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
@@ -253,6 +258,15 @@ def _migrate_db():
             )
         except Exception:
             pass  # Index already exists or table doesn't exist yet
+
+        # NodeProxyResult migrations
+        try:
+            cursor = conn.execute("PRAGMA table_info(node_proxy_results)")
+            npr_existing = {row[1] for row in cursor.fetchall()}
+            if "country_name" not in npr_existing:
+                conn.execute("ALTER TABLE node_proxy_results ADD COLUMN country_name TEXT DEFAULT ''")
+        except Exception:
+            pass  # Table doesn't exist yet
 
         conn.commit()
         conn.close()

@@ -12,6 +12,7 @@ import json
 import logging
 import secrets
 import hashlib
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -22,10 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, func, delete
 from sqlalchemy import text, or_
 
+import database
 from database import (
     create_db_and_tables,
     engine,
-    generation_id,
     Subscription,
     RawProxy,
     Settings,
@@ -460,6 +461,9 @@ async def settings_save(
     proto_hy2: int = Form(0),
     proto_hysteria2: int = Form(0),
 
+    # Geo check toggle
+    geo_check_enabled: int = Form(0),
+
     new_password: str = Form(""),
 ):
     user = get_current_user(request)
@@ -499,6 +503,7 @@ async def settings_save(
             settings.good_proxy_retention_cycles = max(0, good_proxy_retention_cycles)
             settings.chunk_size = max(0, chunk_size)
             settings.enabled_protocols = enabled_protocols_json
+            settings.geo_check_enabled = bool(geo_check_enabled)
 
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
@@ -625,6 +630,7 @@ async def proxies_page(request: Request):
             "avg_dl_kbps":      sum_dl // nc,
             "avg_ul_kbps":      sum_ul // nc,
             "last_tested":      max(r.last_tested for r in best_rows),
+            "country_name":     getattr(best_row, "country_name", "") or "",
         })
 
     # Sort: most nodes first → then highest average speed score
@@ -856,12 +862,13 @@ async def node_get_config(authorization: str = Header(None), node_id: int = Quer
         "speed_test_top_n": settings.speed_test_top_n if settings else 0,
         "schedule_interval_minutes": settings.schedule_interval_minutes if settings else 0,
         "chunk_size": settings.chunk_size if settings and settings.chunk_size else 0,
-        "generation_id": generation_id,
+        "generation_id": database.generation_id,
         "force_test": force_test,
         "test_urls": [
             {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
             for t in test_urls
         ],
+        "geo_check_enabled": settings.geo_check_enabled if settings else False,
     }
 
 
@@ -1027,6 +1034,7 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
                 upload_speed_kbps=r.get("upload_speed_kbps", 0),
                 speed_score=r.get("speed_score", 0.0),
                 last_tested=now,
+                country_name=r.get("country_name", ""),
             )
             session.add(npr)
             if r.get("tests_passed", 0) > 0:
@@ -1491,7 +1499,6 @@ async def _background_fetch():
             if final_proxies:
                 # Update generation_id BEFORE commit - ensures no race condition where
                 # workers see new proxies with old generation_id
-                import database
                 database.generation_id = str(uuid.uuid4())
                 logger.info(f"Background fetch: updated generation_id={database.generation_id}")
 
@@ -1531,7 +1538,8 @@ def _compute_webhook_averages(
 ) -> dict[str, dict]:
     """Aggregate per proxy identity: best result per node_id, then compute averages.
 
-    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float}
+    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float,
+                                    "node_ids": list, "country_name": str}
     """
     grouped: dict[str, dict] = {}
     for r in results:
@@ -1552,12 +1560,16 @@ def _compute_webhook_averages(
             continue
         rows = list(agg["node_best"].values())
         node_ids = list(agg["node_best"].keys())
+        best_row = max(rows, key=lambda r: r.speed_score)
+        # Pick country_name from the best-scoring row (most reliable result)
+        country = getattr(best_row, "country_name", "") or ""
         out[pid] = {
-            "raw_url": max(rows, key=lambda r: r.speed_score).raw_url,
+            "raw_url": best_row.raw_url,
             "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
             "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
             "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
             "node_ids": node_ids,
+            "country_name": country,
         }
     return out
 
@@ -1568,6 +1580,7 @@ async def webhook_output(secret_path: str):
     
     - Sorts by number of confirming nodes (desc), then by avg_speed_score (desc)
     - Applies optional DL/UL speed filters BEFORE sorting and limiting
+    - When geo_check_enabled: deduplicates by country (keeps best per country)
     - Reloads settings after cleanup to avoid expired object issues
     """
     with Session(engine) as session:
@@ -1636,6 +1649,31 @@ async def webhook_output(secret_path: str):
             f"(min_dl={min_dl}, min_ul={min_ul})"
         )
         
+        # Geo-check deduplication: if enabled, keep only the best proxy per country
+        geo_enabled = settings.geo_check_enabled
+        if geo_enabled:
+            country_best: dict[str, tuple[str, dict]] = {}  # country_name -> (pid, data)
+            no_country: dict[str, dict] = {}  # proxies without country info
+            for pid, d in filtered_data.items():
+                country = d.get("country_name", "").strip()
+                if not country:
+                    no_country[pid] = d
+                    continue
+                if country not in country_best or d["avg_score"] > country_best[country][1]["avg_score"]:
+                    country_best[country] = (pid, d)
+            
+            # Rebuild filtered_data: best per country + proxies without country
+            deduped_data = {}
+            for country, (pid, d) in country_best.items():
+                deduped_data[pid] = d
+            deduped_data.update(no_country)
+            
+            logger.info(
+                f"Webhook: geo dedup: {len(filtered_data)} → {len(deduped_data)} "
+                f"({len(country_best)} unique countries, {len(no_country)} without country)"
+            )
+            filtered_data = deduped_data
+        
         # Sort: node_count (desc) → avg_score (desc)
         sorted_pids = sorted(
             filtered_data.keys(),
@@ -1648,16 +1686,20 @@ async def webhook_output(secret_path: str):
         if top_n > 0:
             sorted_pids = sorted_pids[:top_n]
         
-        # Apply optional rename prefix
+        # Build output lines with appropriate naming
         prefix = (settings.webhook_rename_prefix or "").strip()
         lines = []
         for i, pid in enumerate(sorted_pids, start=1):
             url = filtered_data[pid]["raw_url"]
-            if prefix:
+            country = filtered_data[pid].get("country_name", "").strip()
+            if geo_enabled and country:
+                # When geo check is enabled and country is known, use country name as remark
+                url = replace_proxy_remark(url, country)
+            elif prefix:
                 url = replace_proxy_remark(url, f"{prefix} - {i}")
             lines.append(url)
         
-        logger.info(f"Webhook: returning {len(lines)} proxies (top_n={top_n or 'unlimited'})")
+        logger.info(f"Webhook: returning {len(lines)} proxies (top_n={top_n or 'unlimited'}, geo={geo_enabled})")
         
         return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
 

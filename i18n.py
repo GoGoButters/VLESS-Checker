@@ -219,6 +219,10 @@ translations = {
         "settings_rename_prefix": "Config Rename Prefix",
         "settings_rename_prefix_desc": "If set, configs in webhook will be renamed to PREFIX - 1, PREFIX - 2, etc. Leave empty for original names.",
         "settings_rename_placeholder": "e.g. MyVPN — leave empty for original names",
+        "settings_consensus_only": "Consensus-only mode",
+        "settings_consensus_only_desc": "Return only proxies confirmed by ALL online nodes. Speed filters apply to this subset.",
+        "settings_geo_check": "Country detection (GeoIP)",
+        "settings_geo_check_desc": "Workers detect proxy country via GeoIP after speed tests. Webhook renames configs to country names in Russian and keeps only the best proxy per country.",
         "dash_copied": "Copied!"
     },
     "ru": {
@@ -441,6 +445,10 @@ translations = {
         "settings_rename_prefix": "Префикс переименования конфигов",
         "settings_rename_prefix_desc": "Если задан, конфиги в вебхуке будут переименованы в ПРЕФИКС - 1, ПРЕФИКС - 2 и т.д. Оставьте пустым для оригинальных имён.",
         "settings_rename_placeholder": "напр. МойVPN — оставьте пустым для оригинальных имён",
+        "settings_consensus_only": "Только консенсус",
+        "settings_consensus_only_desc": "Возвращать только прокси, подтверждённые ВСЕМИ онлайн-нодами. Фильтры скорости применяются к этому подмножеству.",
+        "settings_geo_check": "Определение страны (GeoIP)",
+        "settings_geo_check_desc": "Воркеры определяют страну прокси через GeoIP после тестов скорости. Вебхук переименовывает конфиги в названия стран на русском и оставляет только лучший прокси от каждой страны.",
         "dash_copied": "Скопировано!"
     }
 }

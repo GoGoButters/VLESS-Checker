@@ -25,6 +25,7 @@
                 <tr class="border-b border-slate-700/30">
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase">#</th>
                     <th class="text-left px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Config</th>
+                    <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">🌍</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Nodes</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Tests</th>
                     <th class="text-center px-4 py-4 text-xs font-semibold text-slate-400 uppercase">Ping</th>
@@ -43,6 +44,13 @@
                             <div class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></div>
                             <span class="text-sm text-slate-200 truncate max-w-lg font-mono">{{ p.raw_url[:80] }}{% if p.raw_url|length > 80 %}...{% endif %}</span>
                         </div>
+                    </td>
+                    <td class="px-4 py-4 text-center">
+                        {% if p.country_name %}
+                        <span class="px-2 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 text-[11px] font-semibold">{{ p.country_name }}</span>
+                        {% else %}
+                        <span class="text-sm text-slate-500">—</span>
+                        {% endif %}
                     </td>
                     <td class="px-4 py-4 text-center">
                         <span class="px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 text-[11px] font-bold">{{ p.node_count }}</span>
