@@ -943,9 +943,9 @@ async def node_get_proxies(
     # In full mode: run_id = md5(generation_id) only (no offset, since chunking is now on worker)
     # In paginated mode: run_id = md5(generation_id:offset) (legacy, kept for existing workers)
     if full:
-        run_id_str = f"{generation_id}"
+        run_id_str = f"{database.generation_id}"
     else:
-        run_id_str = f"{generation_id}:{offset}"
+        run_id_str = f"{database.generation_id}:{offset}"
     run_id = hashlib.md5(run_id_str.encode("utf-8")).hexdigest() if raw_urls else "empty"
 
     # Calculate if there are more results (paginated mode only)
