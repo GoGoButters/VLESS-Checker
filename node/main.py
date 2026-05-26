@@ -84,6 +84,7 @@ class NodeApp:
         self.total_chunks = 0
         self.current_chunk = 0
         self._already_active = False  # set True when master reports duplicate
+        self._pending_results_queue = asyncio.Queue()  # queue for robust result reporting
         self.http_client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {config.node_token}"},
             timeout=30.0
@@ -248,7 +249,7 @@ class NodeApp:
             )
             return resp.status_code == 200
         except Exception as e:
-            logger.error(f"Error reporting status: {repr(e)}")
+            logger.warning(f"Error reporting status: {repr(e)}")
             return False
 
     async def get_node_state(self):
@@ -271,23 +272,16 @@ class NodeApp:
         if not self.node_id:
             return False
 
-        try:
-            resp = await self.http_client.post(f"{self.master_url}/api/node/results", json={
-                "node_id": self.node_id,
-                "results": results,
-                "checked_count": checked_count,
-                "is_partial": is_partial,
-                "generation_id": self.generation_id
-            })
-            if resp.status_code == 200:
-                logger.info(f"Successfully reported {len(results)} results (out of {checked_count} checked) to master. is_partial={is_partial}")
-                return True
-            else:
-                logger.error(f"Failed to report results: HTTP {resp.status_code} - {resp.text}")
-                return False
-        except Exception as e:
-            logger.error(f"Error reporting results: {repr(e)}")
-            return False
+        payload = {
+            "node_id": self.node_id,
+            "results": results,
+            "checked_count": checked_count,
+            "is_partial": is_partial,
+            "generation_id": self.generation_id
+        }
+        await self._pending_results_queue.put(payload)
+        logger.info(f"Queued {len(results)} results (out of {checked_count} checked) for sending.")
+        return True
 
     async def run_testing_cycle(self):
         # 1. Check if this worker is flagged as duplicate by master
@@ -576,6 +570,37 @@ class NodeApp:
         next_in = f" Next test in ~{schedule_interval}min." if schedule_interval > 0 else ""
         logger.info(f"Chunked testing complete. {total_checked} checked, {total_passed} passed.{next_in}")
 
+    async def result_sender_loop(self):
+        """Continuously pulls results from the queue and sends them to the master with retries."""
+        while True:
+            try:
+                payload = await self._pending_results_queue.get()
+                
+                attempt = 0
+                base_delay = 5.0
+                
+                while True:
+                    try:
+                        resp = await self.http_client.post(f"{self.master_url}/api/node/results", json=payload)
+                        if resp.status_code == 200:
+                            results_count = len(payload.get("results", []))
+                            logger.info(f"Successfully reported {results_count} results to master.")
+                            break
+                        else:
+                            logger.error(f"Failed to report results: HTTP {resp.status_code} - {resp.text}")
+                    except Exception as e:
+                        logger.error(f"Network error reporting results: {repr(e)}")
+                    
+                    attempt += 1
+                    delay = min(base_delay * (1.5 ** attempt), 120.0)
+                    logger.info(f"Retrying result submission in {delay:.1f} seconds...")
+                    await asyncio.sleep(delay)
+                
+                self._pending_results_queue.task_done()
+            except Exception as e:
+                logger.error(f"Unexpected error in result sender loop: {repr(e)}")
+                await asyncio.sleep(5)
+
     async def log_sender_loop(self):
         while True:
             await asyncio.sleep(5)
@@ -615,6 +640,9 @@ async def main():
 
     # Start the log sender loop in the background
     app._log_task = asyncio.create_task(app.log_sender_loop())
+
+    # Start the result sender loop in the background
+    app._result_sender_task = asyncio.create_task(app.result_sender_loop())
 
     # Start the heartbeat loop in the background (keeps node online during testing)
     app._heartbeat_task = asyncio.create_task(app._heartbeat_loop())
