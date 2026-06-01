@@ -222,7 +222,9 @@ translations = {
         "settings_consensus_only": "Consensus-only mode",
         "settings_consensus_only_desc": "Return only proxies confirmed by ALL online nodes. Speed filters apply to this subset.",
         "settings_geo_check": "Country detection (GeoIP)",
-        "settings_geo_check_desc": "Workers detect proxy country via GeoIP after speed tests. Webhook renames configs to country names in Russian and keeps only the best proxy per country.",
+        "settings_geo_check_desc": "Workers detect proxy country via GeoIP after speed tests. Webhook renames configs to country names in Russian and keeps the best proxies per country.",
+        "settings_geo_top_n": "Top N proxies per country",
+        "settings_geo_top_n_desc": "How many best proxies to keep per country. With N>1, proxies are named 'Country 1, Country 2, ...' etc. Default: 1.",
         "dash_copied": "Copied!"
     },
     "ru": {
@@ -448,7 +450,9 @@ translations = {
         "settings_consensus_only": "Только консенсус",
         "settings_consensus_only_desc": "Возвращать только прокси, подтверждённые ВСЕМИ онлайн-нодами. Фильтры скорости применяются к этому подмножеству.",
         "settings_geo_check": "Определение страны (GeoIP)",
-        "settings_geo_check_desc": "Воркеры определяют страну прокси через GeoIP после тестов скорости. Вебхук переименовывает конфиги в названия стран на русском и оставляет только лучший прокси от каждой страны.",
+        "settings_geo_check_desc": "Воркеры определяют страну прокси через GeoIP после тестов скорости. Вебхук переименовывает конфиги в названия стран на русском и оставляет лучшие прокси от каждой страны.",
+        "settings_geo_top_n": "Топ-N прокси на страну",
+        "settings_geo_top_n_desc": "Сколько лучших прокси оставлять на каждую страну. При N>1 прокси называются 'Страна 1, Страна 2, ...' и т.д. По умолчанию: 1.",
         "dash_copied": "Скопировано!"
     }
 }

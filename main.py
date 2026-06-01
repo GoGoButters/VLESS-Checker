@@ -463,6 +463,7 @@ async def settings_save(
 
     # Geo check toggle
     geo_check_enabled: int = Form(0),
+    webhook_geo_top_n: int = Form(1),
 
     new_password: str = Form(""),
 ):
@@ -504,6 +505,7 @@ async def settings_save(
             settings.chunk_size = max(0, chunk_size)
             settings.enabled_protocols = enabled_protocols_json
             settings.geo_check_enabled = bool(geo_check_enabled)
+            settings.webhook_geo_top_n = max(1, webhook_geo_top_n)
 
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
@@ -1649,28 +1651,36 @@ async def webhook_output(secret_path: str):
             f"(min_dl={min_dl}, min_ul={min_ul})"
         )
         
-        # Geo-check deduplication: if enabled, keep only the best proxy per country
+        # Geo-check deduplication: if enabled, keep top N proxies per country
         geo_enabled = settings.geo_check_enabled
         if geo_enabled:
-            country_best: dict[str, tuple[str, dict]] = {}  # country_name -> (pid, data)
-            no_country: dict[str, dict] = {}  # proxies without country info
+            geo_top_n = max(1, settings.webhook_geo_top_n or 1)
+            # Collect all proxies per country, sorted by avg_score desc
+            country_proxies: dict[str, list[tuple[str, dict]]] = {}  # country_name -> [(pid, data), ...]
+            no_country: list[tuple[str, dict]] = []  # proxies without country info
             for pid, d in filtered_data.items():
                 country = d.get("country_name", "").strip()
                 if not country:
-                    no_country[pid] = d
+                    no_country.append((pid, d))
                     continue
-                if country not in country_best or d["avg_score"] > country_best[country][1]["avg_score"]:
-                    country_best[country] = (pid, d)
+                if country not in country_proxies:
+                    country_proxies[country] = []
+                country_proxies[country].append((pid, d))
             
-            # Rebuild filtered_data: best per country + proxies without country
+            # Sort each country's proxies by avg_score desc, keep top N
             deduped_data = {}
-            for country, (pid, d) in country_best.items():
+            for country, proxies in country_proxies.items():
+                proxies.sort(key=lambda x: x[1]["avg_score"], reverse=True)
+                for pid, d in proxies[:geo_top_n]:
+                    deduped_data[pid] = d
+            # Include no-country proxies as well
+            for pid, d in no_country:
                 deduped_data[pid] = d
-            deduped_data.update(no_country)
             
             logger.info(
                 f"Webhook: geo dedup: {len(filtered_data)} → {len(deduped_data)} "
-                f"({len(country_best)} unique countries, {len(no_country)} without country)"
+                f"({len(country_proxies)} unique countries, top_n_per_country={geo_top_n}, "
+                f"{len(no_country)} without country)"
             )
             filtered_data = deduped_data
         
@@ -1689,15 +1699,37 @@ async def webhook_output(secret_path: str):
         # Build output lines with appropriate naming
         prefix = (settings.webhook_rename_prefix or "").strip()
         lines = []
-        for i, pid in enumerate(sorted_pids, start=1):
-            url = filtered_data[pid]["raw_url"]
-            country = filtered_data[pid].get("country_name", "").strip()
-            if geo_enabled and country:
-                # When geo check is enabled and country is known, use country name as remark
-                url = replace_proxy_remark(url, country)
-            elif prefix:
-                url = replace_proxy_remark(url, f"{prefix} - {i}")
-            lines.append(url)
+        if geo_enabled:
+            geo_top_n = max(1, settings.webhook_geo_top_n or 1)
+            # Group sorted proxies by country for numbering within each country
+            country_counters: dict[str, int] = {}
+            unknown_counter = 0
+            for pid in sorted_pids:
+                url = filtered_data[pid]["raw_url"]
+                country = filtered_data[pid].get("country_name", "").strip()
+                if country:
+                    country_counters[country] = country_counters.get(country, 0) + 1
+                    idx = country_counters[country]
+                    # Only add number suffix if we keep more than 1 per country
+                    if geo_top_n > 1:
+                        remark = f"{country} {idx}"
+                    else:
+                        remark = country
+                    url = replace_proxy_remark(url, remark)
+                else:
+                    # Proxy without detected country — still rename it
+                    unknown_counter += 1
+                    if prefix:
+                        url = replace_proxy_remark(url, f"{prefix} {unknown_counter}")
+                    else:
+                        url = replace_proxy_remark(url, f"Unknown {unknown_counter}")
+                lines.append(url)
+        else:
+            for i, pid in enumerate(sorted_pids, start=1):
+                url = filtered_data[pid]["raw_url"]
+                if prefix:
+                    url = replace_proxy_remark(url, f"{prefix} - {i}")
+                lines.append(url)
         
         logger.info(f"Webhook: returning {len(lines)} proxies (top_n={top_n or 'unlimited'}, geo={geo_enabled})")
         

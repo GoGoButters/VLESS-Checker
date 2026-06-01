@@ -119,6 +119,9 @@ class Settings(SQLModel, table=True):
     # Geo check: if enabled, workers detect proxy country and rename remark to country name in Russian
     geo_check_enabled: bool = Field(default=False)
 
+    # Geo top-N: how many top proxies to keep per country in webhook output (default 1)
+    webhook_geo_top_n: int = Field(default=1)
+
 
 class Node(SQLModel, table=True):
     """Remote checker node registration."""
@@ -198,6 +201,7 @@ def _migrate_db():
             ("enabled_protocols", "TEXT DEFAULT '{\"vless\":true,\"vmess\":true,\"trojan\":true,\"ss\":true,\"hy2\":true,\"hysteria2\":true}'"),
             ("chunk_size", "INTEGER DEFAULT 0"),
             ("geo_check_enabled", "INTEGER DEFAULT 0"),
+            ("webhook_geo_top_n", "INTEGER DEFAULT 1"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:
