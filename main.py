@@ -1618,14 +1618,9 @@ async def webhook_output(secret_path: str):
         # Aggregate: best result per (identity, node_id), then compute averages
         avg_data = _compute_webhook_averages(all_results)
         
-        # Consensus-only filter: return only proxies confirmed by ALL nodes that have actually reported results
+        # Consensus-only filter: return only proxies confirmed by ALL online nodes
         if settings.webhook_consensus_only:
-            # Count unique nodes that have at least one result in the current aggregation
-            nodes_with_results: set[int] = set()
-            for d in avg_data.values():
-                nodes_with_results.update(d["node_ids"])
-            consensus_threshold = len(nodes_with_results) if nodes_with_results else 0
-
+            consensus_threshold = len(online_ids_set)
             if consensus_threshold > 0:
                 consensus_data = {}
                 for pid, d in avg_data.items():
@@ -1633,7 +1628,7 @@ async def webhook_output(secret_path: str):
                         consensus_data[pid] = d
                 logger.info(
                     f"Webhook: consensus filter: {len(avg_data)} → {len(consensus_data)} "
-                    f"(threshold={consensus_threshold}/{len(online_ids)} reporting nodes)"
+                    f"(threshold={consensus_threshold}/{len(online_ids_set)} online nodes)"
                 )
                 avg_data = consensus_data
         
@@ -1657,11 +1652,11 @@ async def webhook_output(secret_path: str):
             geo_top_n = max(1, settings.webhook_geo_top_n or 1)
             # Collect all proxies per country, sorted by avg_score desc
             country_proxies: dict[str, list[tuple[str, dict]]] = {}  # country_name -> [(pid, data), ...]
-            no_country: list[tuple[str, dict]] = []  # proxies without country info
+            no_country_count = 0
             for pid, d in filtered_data.items():
                 country = d.get("country_name", "").strip()
-                if not country:
-                    no_country.append((pid, d))
+                if not country or country.lower() == "unknown":
+                    no_country_count += 1
                     continue
                 if country not in country_proxies:
                     country_proxies[country] = []
@@ -1673,14 +1668,11 @@ async def webhook_output(secret_path: str):
                 proxies.sort(key=lambda x: x[1]["avg_score"], reverse=True)
                 for pid, d in proxies[:geo_top_n]:
                     deduped_data[pid] = d
-            # Include no-country proxies as well
-            for pid, d in no_country:
-                deduped_data[pid] = d
             
             logger.info(
                 f"Webhook: geo dedup: {len(filtered_data)} → {len(deduped_data)} "
                 f"({len(country_proxies)} unique countries, top_n_per_country={geo_top_n}, "
-                f"{len(no_country)} without country)"
+                f"dropped {no_country_count} without country)"
             )
             filtered_data = deduped_data
         
@@ -1717,12 +1709,7 @@ async def webhook_output(secret_path: str):
                         remark = country
                     url = replace_proxy_remark(url, remark)
                 else:
-                    # Proxy without detected country — still rename it
-                    unknown_counter += 1
-                    if prefix:
-                        url = replace_proxy_remark(url, f"{prefix} {unknown_counter}")
-                    else:
-                        url = replace_proxy_remark(url, f"Unknown {unknown_counter}")
+                    continue
                 lines.append(url)
         else:
             for i, pid in enumerate(sorted_pids, start=1):
