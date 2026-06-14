@@ -1658,6 +1658,8 @@ async def webhook_output(secret_path: str):
                 if not country or country.lower() == "unknown":
                     no_country_count += 1
                     continue
+                if country.lower() == "украина":
+                    continue
                 if country not in country_proxies:
                     country_proxies[country] = []
                 country_proxies[country].append((pid, d))
