@@ -1,7 +1,8 @@
 """Speed tester — measures download/upload speed through top-N proxies.
 
-Uses Cloudflare's speed test CDN for reliable, geographically-distributed
-measurements with multi-stream downloads and streaming byte counting.
+Uses multi-stream downloads from reliable CDN endpoints with streaming
+byte counting.  Probes availability via GET+Range instead of HEAD for
+maximum compatibility with file servers.
 """
 
 import asyncio
@@ -25,12 +26,14 @@ SINGBOX_PATH = os.environ.get("SINGBOX_PATH", "/usr/local/bin/sing-box")
 # ---------------------------------------------------------------------------
 # Speed test configuration
 # ---------------------------------------------------------------------------
-# Primary and fallback download URLs (10 MB files, accessible from Russia)
+# Download URLs ordered by reliability (10 MB files).
+# CacheFly is the most reliable CDN globally, followed by Hetzner mirrors.
 DL_TEST_URLS = [
+    "http://cachefly.cachefly.net/10mb.test",
     "https://speed.hetzner.de/10MB.bin",
+    "https://ash-speed.hetzner.com/10MB.bin",
     "https://proof.ovh.net/files/10Mb.dat",
     "http://speedtest.tele2.net/10MB.zip",
-    "https://ash-speed.hetzner.com/10MB.bin",
 ]
 
 # Upload endpoints (POST, accept binary body)
@@ -78,7 +81,7 @@ async def _download_stream(client: httpx.AsyncClient, url: str,
     """Download from `url`, streaming bytes and adding to shared counter."""
     try:
         async with client.stream("GET", url, timeout=httpx.Timeout(timeout_s)) as resp:
-            if resp.status_code != 200:
+            if resp.status_code not in (200, 206):
                 return
             async for chunk in resp.aiter_bytes(chunk_size=65536):
                 if stop_event.is_set():
@@ -88,12 +91,48 @@ async def _download_stream(client: httpx.AsyncClient, url: str,
         pass
 
 
-async def _measure_download(proxy_addr: str, timeout_s: int) -> int:
+async def _probe_url(client: httpx.AsyncClient, url: str) -> bool:
+    """Probe a URL for availability using a small GET+Range request.
+
+    Uses GET with Range header instead of HEAD because many file servers
+    (Hetzner, OVH, Tele2) do not support HEAD properly and return
+    403/405/other errors.
+    """
+    try:
+        resp = await client.get(
+            url,
+            headers={"Range": "bytes=0-1023"},
+            timeout=httpx.Timeout(8.0),
+        )
+        # 200 = server ignores Range (full file), 206 = partial content,
+        # 301/302 = redirect (follow_redirects handles it)
+        if resp.status_code in (200, 206):
+            logger.debug(f"Speed probe OK: {url} (status={resp.status_code}, "
+                         f"body={len(resp.content)}b)")
+            return True
+        else:
+            logger.debug(f"Speed probe FAIL: {url} (status={resp.status_code})")
+            return False
+    except Exception as e:
+        logger.debug(f"Speed probe ERROR: {url} ({type(e).__name__}: {e})")
+        return False
+
+
+async def _measure_download(proxy_addr: str, timeout_s: int,
+                            extra_urls: list[str] | None = None) -> int:
     """Measure download speed using multiple parallel streams.
     Returns download speed in KB/s, or 0 on failure.
+
+    Args:
+        extra_urls: Additional download URLs to try (e.g. master panel's
+                    self-hosted endpoint). These are tried FIRST.
     """
     counter = {"bytes": 0}
     stop_event = asyncio.Event()
+
+    # Build URL list: extra_urls first (most reliable for restricted networks),
+    # then the standard CDN URLs.
+    candidate_urls = list(extra_urls or []) + list(DL_TEST_URLS)
 
     async with httpx.AsyncClient(
         proxy=proxy_addr,
@@ -105,19 +144,19 @@ async def _measure_download(proxy_addr: str, timeout_s: int) -> int:
             max_keepalive_connections=DL_PARALLEL_STREAMS + 2,
         ),
     ) as client:
-        # Find a reachable download URL via quick probe
+        # Find a reachable download URL via small GET probe
         url = None
-        for test_url in DL_TEST_URLS:
-            try:
-                probe = await client.head(test_url, timeout=httpx.Timeout(8.0))
-                if probe.status_code in (200, 301, 302):
-                    url = test_url
-                    break
-            except Exception:
-                continue
+        for test_url in candidate_urls:
+            if await _probe_url(client, test_url):
+                url = test_url
+                break
 
         if not url:
+            logger.warning("Speed DL: no reachable download URL found after "
+                           f"probing {len(candidate_urls)} candidates")
             return 0
+
+        logger.debug(f"Speed DL: using {url}")
 
         # Launch parallel download streams
         start = time.monotonic()
@@ -183,9 +222,14 @@ async def _measure_upload(proxy_addr: str, timeout_s: int) -> int:
 # ---------------------------------------------------------------------------
 # Combined speed measurement for a single proxy
 # ---------------------------------------------------------------------------
-async def _measure_speed(proxy_url: str, timeout_s: int = 20) -> tuple[int, int] | None:
+async def _measure_speed(proxy_url: str, timeout_s: int = 20,
+                         extra_dl_urls: list[str] | None = None) -> tuple[int, int] | None:
     """Measure download/upload speed for a single proxy.
     Returns (download_kbps, upload_kbps) or None on failure.
+
+    Args:
+        extra_dl_urls: Extra download URLs to try first (e.g. master panel's
+                       self-hosted speed test endpoint).
     """
     parsed_outbound = parse_proxy_url(proxy_url)
     if not parsed_outbound:
@@ -215,7 +259,8 @@ async def _measure_speed(proxy_url: str, timeout_s: int = 20) -> tuple[int, int]
             local_proxy = f"socks5://127.0.0.1:{socks_port}"
 
             # Download speed test (multi-stream)
-            dl_kbps = await _measure_download(local_proxy, timeout_s)
+            dl_kbps = await _measure_download(local_proxy, timeout_s,
+                                              extra_urls=extra_dl_urls)
 
             # Upload speed test
             ul_kbps = await _measure_upload(local_proxy, timeout_s)

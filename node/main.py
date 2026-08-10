@@ -311,6 +311,10 @@ class NodeApp:
         schedule_interval = test_config.get("schedule_interval_minutes", 0)
         geo_check_enabled = test_config.get("geo_check_enabled", False)
 
+        # Build full master speed test download URL for self-hosted fallback
+        speed_dl_path = test_config.get("speed_test_dl_url", "")
+        master_dl_url = f"{self.master_url}{speed_dl_path}" if speed_dl_path else ""
+
         # Update the known schedule interval from master
         self.last_schedule_interval = schedule_interval
 
@@ -374,6 +378,7 @@ class NodeApp:
         await self._run_chunked_testing(
             test_urls, ping_thresh, http_timeout, concurrent, speed_top_n, schedule_interval, start_chunk,
             geo_check_enabled=geo_check_enabled,
+            master_dl_url=master_dl_url,
         )
 
         # 7. Update last test completion time
@@ -383,6 +388,7 @@ class NodeApp:
         self, test_urls, ping_thresh, http_timeout, concurrent,
         speed_top_n, schedule_interval, start_chunk: int = 0,
         geo_check_enabled: bool = False,
+        master_dl_url: str = "",
     ):
         """Fetch ALL proxies once, slice into chunks locally, test & report each chunk.
 
@@ -496,7 +502,9 @@ class NodeApp:
                 async def _speed_one(p: object):
                     nonlocal done
                     async with speed_sem:
-                        result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20))
+                        extra_dl = [master_dl_url] if master_dl_url else None
+                        result = await _measure_speed(p.raw_url, timeout_s=max(http_timeout + 10, 20),
+                                                     extra_dl_urls=extra_dl)
                         speed_score = 0.0
                         dl, ul = 0, 0
                         if result:

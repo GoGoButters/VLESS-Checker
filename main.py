@@ -17,7 +17,7 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, Request, Form, HTTPException, Header, BackgroundTasks, Query
-from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select, func, delete
@@ -871,6 +871,7 @@ async def node_get_config(authorization: str = Header(None), node_id: int = Quer
             for t in test_urls
         ],
         "geo_check_enabled": settings.geo_check_enabled if settings else False,
+        "speed_test_dl_url": "/api/speedtest/download",
     }
 
 
@@ -1386,6 +1387,42 @@ async def node_get_state(node_id: int = Query(...), authorization: str = Header(
             "testing_generation_id": node.testing_generation_id,
             "chunk_size": settings.chunk_size if settings else 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# Speed test download endpoint (self-hosted fallback for restricted nodes)
+# ---------------------------------------------------------------------------
+_SPEEDTEST_BLOB_SIZE = 10 * 1024 * 1024  # 10 MB
+_speedtest_blob: bytes | None = None
+
+
+def _get_speedtest_blob() -> bytes:
+    """Lazily generate and cache a 10 MB random blob for speed testing."""
+    global _speedtest_blob
+    if _speedtest_blob is None:
+        import os as _os
+        _speedtest_blob = _os.urandom(_SPEEDTEST_BLOB_SIZE)
+    return _speedtest_blob
+
+
+@app.get("/api/speedtest/download")
+async def speedtest_download():
+    """Serve a 10 MB binary blob for speed testing.
+
+    Nodes behind restricted networks (e.g. MTS whitelist) can use this
+    endpoint as a reliable fallback when external speed test servers
+    are unreachable.  No auth required — only random bytes are served.
+    """
+    blob = _get_speedtest_blob()
+    return Response(
+        content=blob,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(blob)),
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
