@@ -56,6 +56,9 @@ def _get_free_port() -> int:
 
 
 def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
+    bind_interface = os.environ.get("BIND_INTERFACE", "")
+    if bind_interface:
+        outbound["bind_interface"] = bind_interface
     return {
         "log": {"disabled": True, "level": "error"},
         "inbounds": [
@@ -102,7 +105,7 @@ async def _probe_url(client: httpx.AsyncClient, url: str) -> bool:
         resp = await client.get(
             url,
             headers={"Range": "bytes=0-1023"},
-            timeout=httpx.Timeout(8.0),
+            timeout=httpx.Timeout(15.0),
         )
         # 200 = server ignores Range (full file), 206 = partial content,
         # 301/302 = redirect (follow_redirects handles it)
@@ -111,10 +114,10 @@ async def _probe_url(client: httpx.AsyncClient, url: str) -> bool:
                          f"body={len(resp.content)}b)")
             return True
         else:
-            logger.debug(f"Speed probe FAIL: {url} (status={resp.status_code})")
+            logger.warning(f"Speed probe FAIL: {url} (status={resp.status_code})")
             return False
     except Exception as e:
-        logger.debug(f"Speed probe ERROR: {url} ({type(e).__name__}: {e})")
+        logger.warning(f"Speed probe ERROR: {url} ({type(e).__name__}: {e})")
         return False
 
 

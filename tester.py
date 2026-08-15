@@ -53,6 +53,9 @@ async def _tcp_ping(host: str, port: int, timeout: float = 3.0) -> int | None:
 
 def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
     """Build sing-box JSON config for a proxy check."""
+    bind_interface = os.environ.get("BIND_INTERFACE", "")
+    if bind_interface:
+        outbound["bind_interface"] = bind_interface
     return {
         "log": {
             "disabled": False,
@@ -144,13 +147,13 @@ async def _check_single_proxy(
                             ):
                                 tests_passed += 1
                             else:
-                                logger.debug(
+                                logger.warning(
                                     f"Test URL {tu['url']} failed for {target_host}:{target_port} "
                                     f"(status={resp.status_code}, expected={tu['expect_status']}, "
                                     f"body={body_len}b, min={tu['min_body_bytes']}b)"
                                 )
                     except Exception as e:
-                        logger.debug(
+                        logger.warning(
                             f"Test URL {tu['url']} error for {target_host}:{target_port}: {e}"
                         )
 
@@ -169,7 +172,7 @@ async def _check_single_proxy(
                     return None
 
             except Exception as e:
-                logger.debug(f"Proxy check failed for {target_host}:{target_port}: {e}")
+                logger.warning(f"Proxy check failed for {target_host}:{target_port}: {e}")
                 test_status["checked"] += 1
                 test_status["failed"] += 1
             finally:
@@ -287,8 +290,8 @@ async def _check_single_proxy_internal(
                             resp = await client.get(tu["url"])
                             if resp.status_code == tu["expect_status"] and len(resp.content) >= tu["min_body_bytes"]:
                                 tests_passed += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Test URL {tu['url']} error (internal check): {e}")
 
                 if tests_passed > 0:
                     status_ref["checked"] += 1

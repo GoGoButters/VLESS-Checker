@@ -1,0 +1,29 @@
+services:
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: panel
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  node:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    container_name: node
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MASTER_URL=http://panel:8000
+      - NODE_TOKEN=test_token_123
+      - NODE_NAME=local-worker
+      - NODE_REGION=LOCAL
+    depends_on:
+      - panel

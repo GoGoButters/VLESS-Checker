@@ -40,8 +40,16 @@ class RemoteLogHandler(logging.Handler):
         super().__init__()
         self.logs = []
         self._buffer_lock = threading.Lock()
+        self.target_level_num = 20  # INFO default
+        self.level_map = {"debug": 10, "info": 20, "warning": 30, "error": 40, "off": 999}
+        
+    def set_level(self, level_str):
+        self.target_level_num = self.level_map.get(level_str.lower(), 20)
 
     def emit(self, record):
+        if record.levelno < self.target_level_num:
+            return
+            
         try:
             msg = self.format(record)
             entry = {
@@ -205,6 +213,8 @@ class NodeApp:
                 self.chunk_size = data.get("chunk_size", 0)
                 self.generation_id = data.get("generation_id")
                 self.force_test = data.get("force_test", False)
+                self.log_level = data.get("node_log_level", "info")
+                remote_log_handler.set_level(self.log_level)
                 return data
             return None
         except Exception as e:
@@ -612,6 +622,12 @@ class NodeApp:
     async def log_sender_loop(self):
         while True:
             await asyncio.sleep(5)
+            
+            # Skip sending if logging is totally off
+            if getattr(self, 'log_level', 'info') == 'off':
+                remote_log_handler.pop_all() # clear buffer
+                continue
+                
             logs = remote_log_handler.pop_all()
             if not logs:
                 continue
@@ -644,6 +660,7 @@ class NodeApp:
 
 async def main():
     logger.info("Initializing VPN Checker Worker Node...")
+    os.environ["BIND_INTERFACE"] = getattr(config, "bind_interface", "")
     app = NodeApp()
 
     # Start the log sender loop in the background

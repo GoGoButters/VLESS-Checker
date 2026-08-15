@@ -1,4 +1,5 @@
 """Database models and engine setup for VPN Checker."""
+from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
@@ -34,7 +35,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 class Subscription(SQLModel, table=True):
     __tablename__ = "subscriptions"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     url: str = Field(unique=True, index=True)
     added_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     is_enabled: bool = Field(default=True)
@@ -44,10 +45,10 @@ class Subscription(SQLModel, table=True):
 class RawProxy(SQLModel, table=True):
     """Raw proxy URLs fetched from subscriptions, awaiting worker testing."""
     __tablename__ = "raw_proxies"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     raw_url: str = Field(unique=True, index=True)
     fetched_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    banned_until: Optional[str] = Field(default=None, index=True)  # ISO timestamp or None
+    banned_until: str | None = Field(default=None, index=True)  # ISO timestamp or None
 
     consecutive_failures: int = Field(default=0)  # Consecutive check cycles failed on ALL workers
 
@@ -57,17 +58,46 @@ class RawProxy(SQLModel, table=True):
 class TestUrl(SQLModel, table=True):
     """User-configurable URLs to check proxies against."""
     __tablename__ = "test_urls"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     url: str = Field(unique=True, index=True)
     expect_status: int = Field(default=200)
     min_body_bytes: int = Field(default=100)
     position: int = Field(default=0)
 
 
+class RatingGroup(SQLModel, table=True):
+    """Rating group: a named set of nodes with its own webhook."""
+    __tablename__ = "rating_groups"
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(default="", index=True)
+    webhook_path: str = Field(default="", unique=True)
+    
+    # Per-rating webhook settings (override global)
+    max_proxies: int = Field(default=0)        # 0 = unlimited
+    min_dl_kbps: int = Field(default=0)
+    min_ul_kbps: int = Field(default=0)
+    rename_prefix: str = Field(default="")
+    consensus_only: bool = Field(default=False)
+    geo_top_n: int = Field(default=1)
+    
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class NodeRatingLink(SQLModel, table=True):
+    """Many-to-many link between nodes and rating groups."""
+    __tablename__ = "node_rating_links"
+    __table_args__ = (
+        UniqueConstraint("node_id", "rating_group_id", name="uq_node_rating"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    node_id: int = Field(index=True)
+    rating_group_id: int = Field(index=True)
+
+
 class ProxyResult(SQLModel, table=True):
     """Proxy test results. Used by workers as a data container; master reads from NodeProxyResult instead."""
     __tablename__ = "proxy_results"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     raw_url: str = Field(default="", index=True)
     ping_ms: int = Field(default=0)
     tests_passed: int = Field(default=0)
@@ -80,7 +110,7 @@ class ProxyResult(SQLModel, table=True):
 
 class Settings(SQLModel, table=True):
     __tablename__ = "settings"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     admin_pass_hash: str = Field(default="")
     ping_threshold_ms: int = Field(default=1000)
     webhook_secret_path: str = Field(default="secret-distrib")
@@ -121,12 +151,19 @@ class Settings(SQLModel, table=True):
 
     # Geo top-N: how many top proxies to keep per country in webhook output (default 1)
     webhook_geo_top_n: int = Field(default=1)
+    
+    # Node logging control
+    node_log_level: str = Field(default="info")  # debug|info|warning|error|off
+    
+    # MCP Server authentication
+    mcp_read_token: str = Field(default="")
+    mcp_admin_token: str = Field(default="")
 
 
 class Node(SQLModel, table=True):
     """Remote checker node registration."""
     __tablename__ = "nodes"
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(default="")
     region: str = Field(default="")
     ip: str = Field(default="")
@@ -149,7 +186,7 @@ class NodeProxyResult(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("node_id", "raw_url", name="uq_node_proxy"),
     )
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     node_id: int = Field(index=True)
     raw_url: str = Field(index=True)
     ping_ms: int = Field(default=0)
@@ -202,6 +239,9 @@ def _migrate_db():
             ("chunk_size", "INTEGER DEFAULT 0"),
             ("geo_check_enabled", "INTEGER DEFAULT 0"),
             ("webhook_geo_top_n", "INTEGER DEFAULT 1"),
+            ("node_log_level", "TEXT DEFAULT 'info'"),
+            ("mcp_read_token", "TEXT DEFAULT ''"),
+            ("mcp_admin_token", "TEXT DEFAULT ''"),
         ]
         for col_name, col_def in settings_migrations:
             if col_name not in existing:

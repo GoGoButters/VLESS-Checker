@@ -13,6 +13,7 @@ class NodeConfig(BaseSettings):
 
     singbox_path: str = "/usr/local/bin/sing-box"
     singbox_port: int = 2080
+    bind_interface: str = ""
 
     concurrent_checks: int = 50
     http_timeout_s: int = 15

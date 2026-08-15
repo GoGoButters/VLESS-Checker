@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}Ratings — {{ t(request, 'app_title') }}{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Ratings</h1>
+            <p class="text-slate-400 mt-2">Manage custom rating groups and assign worker nodes to them.</p>
+        </div>
+        <button onclick="document.getElementById('addRatingModal').classList.remove('hidden')" class="btn-primary px-5 py-2.5 rounded-xl text-white font-semibold text-sm flex items-center gap-2 shadow-lg shadow-indigo-500/20">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Add Rating Group
+        </button>
+    </div>
+
+    <!-- Ratings List -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {% for rating in ratings %}
+        <div class="glass p-6 rounded-2xl border border-slate-700/50">
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h3 class="text-xl font-bold text-white mb-1">{{ rating.name }}</h3>
+                    <div class="text-sm text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 inline-block">
+                        /{{ rating.webhook_path }}
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="copyWebhook('{{ request.base_url }}{{ rating.webhook_path }}')" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-indigo-400 transition-colors" title="Copy URL">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
+                    </button>
+                    <button onclick="editRating({{ rating.id }}, '{{ rating.name|escape }}', '{{ rating.webhook_path|escape }}', {{ rating.max_proxies }}, {{ rating.min_dl_kbps }}, {{ rating.min_ul_kbps }}, '{{ rating.rename_prefix|escape }}', {{ 'true' if rating.consensus_only else 'false' }}, {{ rating.geo_top_n }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-amber-400 transition-colors" title="Edit">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    </button>
+                    <form action="/ratings/delete/{{ rating.id }}" method="post" onsubmit="return confirm('Delete this rating group?');" class="inline">
+                        <button type="submit" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-rose-400 transition-colors" title="Delete">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">Max Proxies</div>
+                    <div class="text-sm font-medium text-slate-200">{{ rating.max_proxies if rating.max_proxies > 0 else 'Unlimited' }}</div>
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">Min Speed (DL / UL)</div>
+                    <div class="text-sm font-medium text-slate-200">
+                        {{ rating.min_dl_kbps if rating.min_dl_kbps > 0 else '0' }} / 
+                        {{ rating.min_ul_kbps if rating.min_ul_kbps > 0 else '0' }} KB/s
+                    </div>
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">Consensus Mode</div>
+                    <div class="text-sm font-medium text-slate-200">{{ 'Enabled' if rating.consensus_only else 'Disabled' }}</div>
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">Geo Top-N</div>
+                    <div class="text-sm font-medium text-slate-200">{{ rating.geo_top_n }}</div>
+                </div>
+            </div>
+
+            <!-- Linked Nodes -->
+            <div class="mt-4">
+                <h4 class="text-sm font-semibold text-slate-300 mb-3 flex items-center justify-between">
+                    <span>Linked Worker Nodes</span>
+                    <span class="text-xs font-normal text-slate-500">{{ rating_nodes_map.get(rating.id, [])|length }} node(s)</span>
+                </h4>
+                
+                <div class="space-y-2 mb-4 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                    {% set linked_ids = rating_nodes_map.get(rating.id, []) %}
+                    {% for node_id in linked_ids %}
+                        {% set node = nodes|selectattr("id", "equalto", node_id)|first %}
+                        {% if node %}
+                        <div class="flex items-center justify-between p-2 rounded-lg bg-slate-800/50 border border-slate-700/50">
+                            <div class="flex items-center gap-2">
+                                <div class="w-2 h-2 rounded-full {% if node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
+                                <span class="text-sm text-slate-200 font-medium">{{ node.name }}</span>
+                                <span class="text-xs text-slate-500">{{ node.region }}</span>
+                            </div>
+                            <form action="/ratings/{{ rating.id }}/remove-node/{{ node.id }}" method="post" class="inline">
+                                <button type="submit" class="text-rose-400 hover:text-rose-300 text-xs px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 transition-colors">Remove</button>
+                            </form>
+                        </div>
+                        {% endif %}
+                    {% else %}
+                        <div class="text-sm text-slate-500 text-center py-4 bg-slate-800/20 rounded-lg border border-dashed border-slate-700/50">
+                            No nodes assigned to this rating group yet.
+                        </div>
+                    {% endfor %}
+                </div>
+
+                <!-- Add Node form -->
+                <form action="#" method="post" onsubmit="event.preventDefault(); document.getElementById('addNodeForm_{{ rating.id }}').action = '/ratings/{{ rating.id }}/add-node/' + document.getElementById('nodeSelect_{{ rating.id }}').value; document.getElementById('addNodeForm_{{ rating.id }}').submit();" id="addNodeForm_{{ rating.id }}" class="flex gap-2">
+                    <select id="nodeSelect_{{ rating.id }}" class="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300 outline-none focus:border-indigo-500">
+                        <option value="" disabled selected>Select a node to add...</option>
+                        {% for node in nodes %}
+                            {% if node.id not in rating_nodes_map.get(rating.id, []) %}
+                                <option value="{{ node.id }}">{{ node.name }} ({{ node.region }}) - {% if node.is_online %}Online{% else %}Offline{% endif %}</option>
+                            {% endif %}
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="px-3 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white border border-indigo-500/30 transition-colors text-sm font-medium">Add</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <div class="col-span-full glass p-12 rounded-2xl text-center">
+            <div class="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center mx-auto mb-4 border border-slate-700/50">
+                <svg class="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"/>
+                </svg>
+            </div>
+            <h3 class="text-xl font-bold text-slate-300">No Rating Groups</h3>
+            <p class="text-slate-500 mt-2">Create a rating group to serve proxies tested by a specific subset of nodes.</p>
+            <button onclick="document.getElementById('addRatingModal').classList.remove('hidden')" class="mt-6 px-6 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400 transition-colors">
+                Create your first Rating Group
+            </button>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Add Rating Modal -->
+<div id="addRatingModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="this.parentElement.classList.add('hidden')"></div>
+    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
+        <div class="glass rounded-2xl border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-slate-700">
+                <h2 class="text-xl font-bold text-white">Add Rating Group</h2>
+            </div>
+            <form action="/ratings/add" method="post" class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Name</label>
+                    <input type="text" name="name" required placeholder="e.g. Premium Nodes"
+                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Webhook Path</label>
+                    <div class="flex items-center gap-2">
+                        <span class="text-slate-500">/</span>
+                        <input type="text" name="webhook_path" required placeholder="premium-proxies"
+                            class="flex-1 px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white font-mono outline-none">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Max Proxies</label>
+                        <input type="number" name="max_proxies" value="0" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Geo Top-N</label>
+                        <input type="number" name="geo_top_n" value="1" min="1"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Min DL (KB/s)</label>
+                        <input type="number" name="min_dl_kbps" value="0" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Min UL (KB/s)</label>
+                        <input type="number" name="min_ul_kbps" value="0" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Rename Prefix</label>
+                    <input type="text" name="rename_prefix" placeholder="e.g. PREM"
+                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                </div>
+                
+                <label class="flex items-center gap-3 cursor-pointer pt-2">
+                    <input type="checkbox" name="consensus_only" value="1"
+                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
+                    <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
+                </label>
+                
+                <div class="pt-4 flex justify-end gap-3">
+                    <button type="button" onclick="document.getElementById('addRatingModal').classList.add('hidden')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">Cancel</button>
+                    <button type="submit" class="btn-primary px-5 py-2.5 rounded-xl text-white font-medium">Create Rating</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Rating Modal -->
+<div id="editRatingModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="this.parentElement.classList.add('hidden')"></div>
+    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
+        <div class="glass rounded-2xl border border-slate-700 shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-slate-700">
+                <h2 class="text-xl font-bold text-white">Edit Rating Group</h2>
+            </div>
+            <form id="editRatingForm" method="post" class="p-6 space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Name</label>
+                    <input type="text" name="name" id="edit_name" required
+                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Webhook Path</label>
+                    <div class="flex items-center gap-2">
+                        <span class="text-slate-500">/</span>
+                        <input type="text" name="webhook_path" id="edit_webhook_path" required
+                            class="flex-1 px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white font-mono outline-none">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Max Proxies</label>
+                        <input type="number" name="max_proxies" id="edit_max_proxies" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Geo Top-N</label>
+                        <input type="number" name="geo_top_n" id="edit_geo_top_n" min="1"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Min DL (KB/s)</label>
+                        <input type="number" name="min_dl_kbps" id="edit_min_dl_kbps" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-300 mb-1">Min UL (KB/s)</label>
+                        <input type="number" name="min_ul_kbps" id="edit_min_ul_kbps" min="0"
+                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-slate-300 mb-1">Rename Prefix</label>
+                    <input type="text" name="rename_prefix" id="edit_rename_prefix"
+                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
+                </div>
+                
+                <label class="flex items-center gap-3 cursor-pointer pt-2">
+                    <input type="checkbox" name="consensus_only" id="edit_consensus_only" value="1"
+                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
+                    <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
+                </label>
+                
+                <div class="pt-4 flex justify-end gap-3">
+                    <button type="button" onclick="document.getElementById('editRatingModal').classList.add('hidden')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">Cancel</button>
+                    <button type="submit" class="btn-primary px-5 py-2.5 rounded-xl text-white font-medium">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="fixed bottom-4 right-4 transform translate-y-20 opacity-0 transition-all duration-300 bg-emerald-500 text-white px-6 py-3 rounded-xl shadow-lg font-medium shadow-emerald-500/20 z-50 flex items-center gap-2">
+    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+    URL Copied!
+</div>
+
+<style>
+    /* Custom scrollbar for linked nodes list */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: rgba(30, 41, 59, 0.5); 
+        border-radius: 10px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: rgba(99, 102, 241, 0.5); 
+        border-radius: 10px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: rgba(99, 102, 241, 0.8); 
+    }
+</style>
+
+<script>
+function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoTopN) {
+    document.getElementById('editRatingForm').action = '/ratings/edit/' + id;
+    document.getElementById('edit_name').value = name;
+    document.getElementById('edit_webhook_path').value = path;
+    document.getElementById('edit_max_proxies').value = maxP;
+    document.getElementById('edit_min_dl_kbps').value = minDL;
+    document.getElementById('edit_min_ul_kbps').value = minUL;
+    document.getElementById('edit_rename_prefix').value = prefix;
+    document.getElementById('edit_geo_top_n').value = geoTopN;
+    document.getElementById('edit_consensus_only').checked = consensus;
+    
+    document.getElementById('editRatingModal').classList.remove('hidden');
+}
+
+function copyWebhook(url) {
+    navigator.clipboard.writeText(url).then(() => {
+        const toast = document.getElementById('toast');
+        toast.classList.remove('translate-y-20', 'opacity-0');
+        setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
+    }).catch(err => {
+        console.error('Copy failed:', err);
+        alert('Failed to copy: ' + url);
+    });
+}
+</script>
+{% endblock %}

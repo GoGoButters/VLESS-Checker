@@ -7,6 +7,41 @@ The master panel does NOT run any proxy tests. It serves as a manager:
 - Serves webhook with best proxies from node results
 """
 
+import copy
+
+class TokenAuthMiddleware:
+    def __init__(self, asgi_app, token_field: str):
+        self.asgi_app = asgi_app
+        self.token_field = token_field
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.asgi_app(scope, receive, send)
+
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
+        with Session(engine) as session:
+            s = session.exec(select(Settings)).first()
+            expected_token = getattr(s, self.token_field, "") if s else ""
+
+        if not expected_token or token != expected_token:
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [(b"content-type", b"text/plain")],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b"Unauthorized",
+            })
+            return
+
+        return await self.asgi_app(scope, receive, send)
+
 import asyncio
 import json
 import logging
@@ -59,6 +94,23 @@ logger = logging.getLogger("vpn_checker")
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="VPN Checker", version="3.0.0")
+
+try:
+    from starlette.routing import Mount
+    from mcp_server import mcp_ro, mcp_admin
+
+    mcp_ro_app = mcp_ro.http_app(transport="sse")
+    auth_ro_app = TokenAuthMiddleware(mcp_ro_app, "mcp_read_token")
+    
+    mcp_admin_app = mcp_admin.http_app(transport="sse")
+    auth_admin_app = TokenAuthMiddleware(mcp_admin_app, "mcp_admin_token")
+    
+    app.router.routes.insert(0, Mount("/mcp/admin", auth_admin_app))
+    app.router.routes.insert(0, Mount("/mcp/read", auth_ro_app))
+    logger.info("Mounted MCP endpoints: /mcp/read, /mcp/admin")
+except ImportError as e:
+    logger.warning(f"Failed to mount MCP servers: {e}")
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 

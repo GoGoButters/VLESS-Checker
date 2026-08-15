@@ -276,6 +276,9 @@ def _get_free_port() -> int:
 
 
 def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
+    bind_interface = os.environ.get("BIND_INTERFACE", "")
+    if bind_interface:
+        outbound["bind_interface"] = bind_interface
     return {
         "log": {"disabled": True, "level": "error"},
         "inbounds": [
