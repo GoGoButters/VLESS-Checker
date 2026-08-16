@@ -1,4 +1,4 @@
-"""VPN Checker — FastAPI main application (Manager-only mode).
+﻿"""VPN Checker тАФ FastAPI main application (Manager-only mode).
 
 The master panel does NOT run any proxy tests. It serves as a manager:
 - Fetches subscriptions and stores raw proxy URLs
@@ -490,6 +490,7 @@ async def settings_save(
     request: Request,
     ping_threshold_ms: int = Form(...),
     concurrent_checks_limit: int = Form(...),
+    webhook_secret_path: str = Form(...),
     schedule_interval_minutes: int = Form(0),
     http_timeout_s: int = Form(10),
     speed_test_top_n: int = Form(0),
@@ -510,6 +511,7 @@ async def settings_save(
     proto_hysteria2: int = Form(0),
 
     # Geo check toggle
+    geo_check_enabled: int = Form(0),
 
     new_password: str = Form(""),
 ):
@@ -533,6 +535,7 @@ async def settings_save(
         if settings:
             settings.ping_threshold_ms = ping_threshold_ms
             settings.concurrent_checks_limit = concurrent_checks_limit
+            settings.webhook_secret_path = webhook_secret_path.strip().strip("/")
             settings.schedule_interval_minutes = max(0, schedule_interval_minutes)
             settings.http_timeout_s = max(1, http_timeout_s)
             settings.speed_test_top_n = max(0, speed_test_top_n)
@@ -544,6 +547,7 @@ async def settings_save(
             settings.good_proxy_retention_cycles = max(0, good_proxy_retention_cycles)
             settings.chunk_size = max(0, chunk_size)
             settings.enabled_protocols = enabled_protocols_json
+            settings.geo_check_enabled = bool(geo_check_enabled)
 
             if new_password.strip():
                 settings.admin_pass_hash = hash_password(new_password.strip())
@@ -610,7 +614,6 @@ async def add_rating(
     min_ul_kbps: int = Form(0),
     rename_prefix: str = Form(""),
     consensus_only: int = Form(0),
-    geo_check_enabled: int = Form(0),
     geo_top_n: int = Form(1),
 ):
     user = get_current_user(request)
@@ -626,8 +629,7 @@ async def add_rating(
             min_ul_kbps=max(0, min_ul_kbps),
             rename_prefix=rename_prefix.strip(),
             consensus_only=bool(consensus_only),
-            geo_check_enabled=bool(geo_check_enabled),
-            geo_top_n=max(1, geo_top_n),
+            geo_top_n=max(1, geo_top_n)
         )
         session.add(rg)
         try:
@@ -649,7 +651,6 @@ async def edit_rating(
     min_ul_kbps: int = Form(0),
     rename_prefix: str = Form(""),
     consensus_only: int = Form(0),
-    geo_check_enabled: int = Form(0),
     geo_top_n: int = Form(1),
 ):
     user = get_current_user(request)
@@ -666,7 +667,6 @@ async def edit_rating(
             rg.min_ul_kbps = max(0, min_ul_kbps)
             rg.rename_prefix = rename_prefix.strip()
             rg.consensus_only = bool(consensus_only)
-            rg.geo_check_enabled = bool(geo_check_enabled)
             rg.geo_top_n = max(1, geo_top_n)
             session.add(rg)
             try:
@@ -807,12 +807,12 @@ async def rating_proxies_partial(request: Request, rating_id: int):
             "country_name": getattr(best_row, "country_name", "") or "",
         })
 
-    if group.geo_check_enabled:
+    if settings.geo_check_enabled:
         geo_top_n = max(1, group.geo_top_n or 1)
         country_proxies = {}
         for p in proxy_list:
             country = p["country_name"].strip()
-            if not country or country.lower() == "unknown" or country.lower() == "украина":
+            if not country or country.lower() == "unknown" or country.lower() == "╤Г╨║╤А╨░╨╕╨╜╨░":
                 continue
             if country not in country_proxies:
                 country_proxies[country] = []
@@ -953,7 +953,7 @@ async def force_node_test(request: Request, node_id: int):
 
 
 # ---------------------------------------------------------------------------
-# NODE API — Bearer Token Auth
+# NODE API тАФ Bearer Token Auth
 # ---------------------------------------------------------------------------
 def _verify_node_token(authorization: str | None) -> bool:
     if not authorization or not authorization.startswith("Bearer "):
@@ -988,7 +988,7 @@ async def node_register(request: Request, authorization: str = Header(None)):
 
             # Anti-duplicate: block registration if another instance is still alive.
             # is_recent = heartbeat within last 60 seconds.
-            # We block ALL duplicates, not just those in "testing" state —
+            # We block ALL duplicates, not just those in "testing" state тАФ
             # an idle node still means a live original that shouldn't be replaced.
             if existing.is_online and is_recent:
                 logger.warning(f"Node '{name}' (id={existing.id}) is already active (status={existing.status}). "
@@ -1055,7 +1055,7 @@ async def node_get_config(authorization: str = Header(None), node_id: int = Quer
             {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
             for t in test_urls
         ],
-        "geo_check_enabled": True,
+        "geo_check_enabled": settings.geo_check_enabled if settings else False,
         "speed_test_dl_url": "/api/speedtest/download",
     }
 
@@ -1099,7 +1099,7 @@ async def node_get_proxies(
                 conditions.append(RawProxy.raw_url.like(f"{prefix}%"))
 
         # When full=True: ignore offset/limit, fetch everything.
-        # effective_limit stays 0 → no LIMIT clause.
+        # effective_limit stays 0 тЖТ no LIMIT clause.
         effective_limit = 0
         if not full:
             if limit > 0:
@@ -1194,7 +1194,7 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
             node.testing_generation_id = generation_id
             node.proxies_checked = 0
             node.proxies_passed = 0
-            # Force full clear even for this chunk — old data is gone
+            # Force full clear even for this chunk тАФ old data is gone
             is_partial = False
 
         # Clear old results: if partial, only delete for proxies in this chunk
@@ -1230,7 +1230,7 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
             else:
                 failed_urls.append(r.get("raw_url", ""))
 
-        # Recalculate counters from DB — correctly accumulates across partial chunks
+        # Recalculate counters from DB тАФ correctly accumulates across partial chunks
         total_checked = session.exec(
             select(func.count()).select_from(NodeProxyResult).where(
                 NodeProxyResult.node_id == node_id
@@ -1271,7 +1271,7 @@ def _evaluate_bans(raw_urls: list[str] | None = None):
 
     Rules:
     - A proxy is considered 'failed' only if it failed on ALL connected workers
-    - If it passed on at least one worker → reset consecutive_failures to 0
+    - If it passed on at least one worker тЖТ reset consecutive_failures to 0
     - Ban only after N consecutive failures (ban_after_n_failures setting)
     """
     try:
@@ -1335,7 +1335,7 @@ def _evaluate_bans(raw_urls: list[str] | None = None):
                 passed_on_any = any(tp > 0 for tp in node_results.values())
 
                 if passed_on_any:
-                    # Passed on at least one node → reset failures, unban if banned
+                    # Passed on at least one node тЖТ reset failures, unban if banned
                     if rp.consecutive_failures > 0:
                         rp.consecutive_failures = 0
                         rp.banned_until = None
@@ -1512,7 +1512,7 @@ async def node_logs(request: Request, authorization: str = Header(None)):
 
 
 # ---------------------------------------------------------------------------
-# NODE STATUS — worker reports testing progress
+# NODE STATUS тАФ worker reports testing progress
 # ---------------------------------------------------------------------------
 @app.post("/api/node/status")
 async def node_update_status(request: Request, authorization: str = Header(None)):
@@ -1552,7 +1552,7 @@ async def node_update_status(request: Request, authorization: str = Header(None)
 
 
 # ---------------------------------------------------------------------------
-# NODE STATE — worker fetches its own state on startup (crash recovery)
+# NODE STATE тАФ worker fetches its own state on startup (crash recovery)
 # ---------------------------------------------------------------------------
 @app.get("/api/node/state")
 async def node_get_state(node_id: int = Query(...), authorization: str = Header(None)):
@@ -1596,7 +1596,7 @@ async def speedtest_download():
 
     Nodes behind restricted networks (e.g. MTS whitelist) can use this
     endpoint as a reliable fallback when external speed test servers
-    are unreachable.  No auth required — only random bytes are served.
+    are unreachable.  No auth required тАФ only random bytes are served.
     """
     blob = _get_speedtest_blob()
     return Response(
@@ -1685,7 +1685,7 @@ async def _background_fetch():
             new_keys = {url.split("#", 1)[0] for url in proxy_links}
 
             # Build final proxy set with retention tracking
-            # key → (full_url, retention_cycles)
+            # key тЖТ (full_url, retention_cycles)
             final_proxies: dict[str, tuple[str, int]] = {}
 
             # 1. Fresh subscriptions: retention_cycles = 0 (reset)
@@ -1755,50 +1755,6 @@ async def api_fetch_status():
 
 
 # ---------------------------------------------------------------------------
-# WEBHOOK — Public proxy distribution (from node results)
-# ---------------------------------------------------------------------------
-def _compute_webhook_averages(
-    results: list[NodeProxyResult],
-) -> dict[str, dict]:
-    """Aggregate per proxy identity: best result per node_id, then compute averages.
-
-    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float,
-                                    "node_ids": list, "country_name": str}
-    """
-    grouped: dict[str, dict] = {}
-    for r in results:
-        if r.tests_passed <= 0:
-            continue
-        pid = get_proxy_identity(r.raw_url)
-        if pid not in grouped:
-            grouped[pid] = {"node_best": {}, "total": r.tests_total}
-        agg = grouped[pid]
-        nid = r.node_id
-        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
-            agg["node_best"][nid] = r
-
-    out = {}
-    for pid, agg in grouped.items():
-        nc = len(agg["node_best"])
-        if nc == 0:
-            continue
-        rows = list(agg["node_best"].values())
-        node_ids = list(agg["node_best"].keys())
-        best_row = max(rows, key=lambda r: r.speed_score)
-        # Pick country_name from the best-scoring row (most reliable result)
-        country = getattr(best_row, "country_name", "") or ""
-        out[pid] = {
-            "raw_url": best_row.raw_url,
-            "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
-            "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
-            "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
-            "node_ids": node_ids,
-            "country_name": country,
-        }
-    return out
-
-
-# ---------------------------------------------------------------------------
 # WEBHOOK тАФ Public proxy distribution (from node results)
 # ---------------------------------------------------------------------------
 def _compute_webhook_averages(
@@ -1842,22 +1798,31 @@ def _compute_webhook_averages(
     return out
 
 
-
 @app.get("/{secret_path:path}")
 async def webhook_output(secret_path: str):
     with Session(engine) as session:
-        # Check if secret_path matches a RatingGroup
-        group = session.exec(select(RatingGroup).where(RatingGroup.webhook_path == secret_path)).first()
-        if not group:
+        settings = session.exec(select(Settings)).first()
+        if not settings:
             raise HTTPException(status_code=404)
+        
+        # Check if secret_path matches a RatingGroup or the global fallback webhook
+        group = session.exec(select(RatingGroup).where(RatingGroup.webhook_path == secret_path)).first()
+        is_global = False
+        if not group:
+            if secret_path == settings.webhook_secret_path:
+                is_global = True
+            else:
+                raise HTTPException(status_code=404)
         
         # Cleanup stale node data (marks offline nodes, deletes orphan results)
         cleanup_stats = _cleanup_stale_node_data(session)
         
-        # RE-LOAD group after cleanup
-        group = session.get(RatingGroup, group.id)
-        if not group:
-            raise HTTPException(status_code=404)
+        # RE-LOAD settings/group after cleanup
+        settings = session.exec(select(Settings)).first()
+        if not is_global:
+            group = session.get(RatingGroup, group.id)
+            if not group:
+                raise HTTPException(status_code=404)
         
         online_ids = cleanup_stats.get("online_ids", [])
         if not online_ids:
@@ -1866,11 +1831,14 @@ async def webhook_output(secret_path: str):
         
         online_ids_set = set(online_ids)
 
-        # Get linked nodes for this group
-        links = session.exec(select(NodeRatingLink).where(NodeRatingLink.rating_group_id == group.id)).all()
-        linked_node_ids = {link.node_id for link in links}
-        # Intersect with online_ids
-        target_node_ids = online_ids_set & linked_node_ids
+        if not is_global:
+            # Get linked nodes for this group
+            links = session.exec(select(NodeRatingLink).where(NodeRatingLink.rating_group_id == group.id)).all()
+            linked_node_ids = {link.node_id for link in links}
+            # Intersect with online_ids
+            target_node_ids = online_ids_set & linked_node_ids
+        else:
+            target_node_ids = online_ids_set
 
         if not target_node_ids:
             logger.warning(f"Webhook {secret_path}: no target online nodes, returning empty list")
@@ -1887,13 +1855,20 @@ async def webhook_output(secret_path: str):
         avg_data = _compute_webhook_averages(all_results)
         
         # Determine filtering parameters
-        consensus_only = group.consensus_only
-        min_dl = group.min_dl_kbps or 0
-        min_ul = group.min_ul_kbps or 0
-        geo_top_n = max(1, group.geo_top_n or 1)
-        top_n = group.max_proxies or 0
-        prefix = (group.rename_prefix or "").strip()
-        geo_enabled = group.geo_check_enabled
+        if is_global:
+            consensus_only = settings.webhook_consensus_only
+            min_dl = settings.webhook_min_dl_kbps or 0
+            min_ul = settings.webhook_min_ul_kbps or 0
+            geo_top_n = max(1, settings.webhook_geo_top_n or 1)
+            top_n = settings.webhook_max_proxies or 0
+            prefix = (settings.webhook_rename_prefix or "").strip()
+        else:
+            consensus_only = group.consensus_only
+            min_dl = group.min_dl_kbps or 0
+            min_ul = group.min_ul_kbps or 0
+            geo_top_n = max(1, group.geo_top_n or 1)
+            top_n = group.max_proxies or 0
+            prefix = (group.rename_prefix or "").strip()
 
         # Consensus-only filter
         if consensus_only:
@@ -1911,14 +1886,15 @@ async def webhook_output(secret_path: str):
             if (min_dl == 0 or d["avg_dl"] >= min_dl) and (min_ul == 0 or d["avg_ul"] >= min_ul):
                 filtered_data[pid] = d
         
-        # Geo-check deduplication
+        # Geo-check deduplication: if enabled globally, deduplicate based on geo_top_n
+        geo_enabled = settings.geo_check_enabled
         if geo_enabled:
             country_proxies: dict[str, list[tuple[str, dict]]] = {}
             for pid, d in filtered_data.items():
                 country = d.get("country_name", "").strip()
                 if not country or country.lower() == "unknown":
                     continue
-                if country.lower() == "украина":
+                if country.lower() == "╤Г╨║╤А╨░╨╕╨╜╨░":
                     continue
                 if country not in country_proxies:
                     country_proxies[country] = []
@@ -1932,7 +1908,7 @@ async def webhook_output(secret_path: str):
             
             filtered_data = deduped_data
         
-        # Sort: node_count (desc) → avg_score (desc)
+        # Sort: node_count (desc) тЖТ avg_score (desc)
         sorted_pids = sorted(
             filtered_data.keys(),
             key=lambda pid: (len(filtered_data[pid]["node_ids"]), filtered_data[pid]["avg_score"]),

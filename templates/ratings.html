@@ -31,7 +31,7 @@
                     <button onclick="copyWebhook('{{ request.base_url }}{{ rating.webhook_path }}')" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-indigo-400 transition-colors" title="Copy URL">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
                     </button>
-                    <button onclick="editRating({{ rating.id }}, '{{ rating.name|escape }}', '{{ rating.webhook_path|escape }}', {{ rating.max_proxies }}, {{ rating.min_dl_kbps }}, {{ rating.min_ul_kbps }}, '{{ rating.rename_prefix|escape }}', {{ 'true' if rating.consensus_only else 'false' }}, {{ rating.geo_top_n }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-amber-400 transition-colors" title="Edit">
+                    <button onclick="editRating({{ rating.id }}, '{{ rating.name|escape }}', '{{ rating.webhook_path|escape }}', {{ rating.max_proxies }}, {{ rating.min_dl_kbps }}, {{ rating.min_ul_kbps }}, '{{ rating.rename_prefix|escape }}', {{ 'true' if rating.consensus_only else 'false' }}, {{ 'true' if rating.geo_check_enabled else 'false' }}, {{ rating.geo_top_n }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-amber-400 transition-colors" title="Edit">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                     </button>
                     <form action="/ratings/delete/{{ rating.id }}" method="post" onsubmit="return confirm('Delete this rating group?');" class="inline">
@@ -185,6 +185,11 @@
                         class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
                     <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
                 </label>
+                <label class="flex items-center gap-3 cursor-pointer pt-2">
+                    <input type="checkbox" name="geo_check_enabled" value="1"
+                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
+                    <span class="text-sm text-slate-200">Country detection (GeoIP) - Distribute best proxy per country</span>
+                </label>
                 
                 <div class="pt-4 flex justify-end gap-3">
                     <button type="button" onclick="document.getElementById('addRatingModal').classList.add('hidden')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">Cancel</button>
@@ -254,6 +259,11 @@
                     <input type="checkbox" name="consensus_only" id="edit_consensus_only" value="1"
                         class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
                     <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
+                </label>
+                <label class="flex items-center gap-3 cursor-pointer pt-2">
+                    <input type="checkbox" name="geo_check_enabled" id="edit_geo_check_enabled" value="1"
+                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
+                    <span class="text-sm text-slate-200">Country detection (GeoIP) - Distribute best proxy per country</span>
                 </label>
                 
                 <div class="pt-4 flex justify-end gap-3">
@@ -337,7 +347,7 @@ async function viewProxies(ratingId, ratingName) {
     }
 }
 
-function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoTopN) {
+function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoCheck, geoTopN) {
     document.getElementById('editRatingForm').action = '/ratings/edit/' + id;
     document.getElementById('edit_name').value = name;
     document.getElementById('edit_webhook_path').value = path;
@@ -347,6 +357,7 @@ function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoTo
     document.getElementById('edit_rename_prefix').value = prefix;
     document.getElementById('edit_geo_top_n').value = geoTopN;
     document.getElementById('edit_consensus_only').checked = consensus;
+    document.getElementById('edit_geo_check_enabled').checked = geoCheck;
     
     document.getElementById('editRatingModal').classList.remove('hidden');
 }

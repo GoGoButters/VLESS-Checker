@@ -78,6 +78,7 @@ class RatingGroup(SQLModel, table=True):
     min_ul_kbps: int = Field(default=0)
     rename_prefix: str = Field(default="")
     consensus_only: bool = Field(default=False)
+    geo_check_enabled: bool = Field(default=False)
     geo_top_n: int = Field(default=1)
     
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -145,9 +146,6 @@ class Settings(SQLModel, table=True):
 
     # Chunking: 0 = disabled (process all at once), N > 0 = process N proxies per chunk for dynamic rating updates
     chunk_size: int = Field(default=0)
-
-    # Geo check: if enabled, workers detect proxy country and rename remark to country name in Russian
-    geo_check_enabled: bool = Field(default=False)
 
     # Geo top-N: how many top proxies to keep per country in webhook output (default 1)
     webhook_geo_top_n: int = Field(default=1)
@@ -250,11 +248,23 @@ def _migrate_db():
         # Subscription migrations
         cursor = conn.execute("PRAGMA table_info(subscriptions)")
         sub_existing = {row[1] for row in cursor.fetchall()}
-        if "is_enabled" not in sub_existing:
-            conn.execute("ALTER TABLE subscriptions ADD COLUMN is_enabled INTEGER DEFAULT 1")
-        if "last_config_count" not in sub_existing:
-            conn.execute("ALTER TABLE subscriptions ADD COLUMN last_config_count INTEGER DEFAULT 0")
         
+        # RatingGroup migrations
+        cursor = conn.execute("PRAGMA table_info(rating_groups)")
+        rg_existing = {row[1] for row in cursor.fetchall()}
+        rg_migrations = [
+            ("max_proxies", "INTEGER DEFAULT 0"),
+            ("min_dl_kbps", "INTEGER DEFAULT 0"),
+            ("min_ul_kbps", "INTEGER DEFAULT 0"),
+            ("rename_prefix", "TEXT DEFAULT ''"),
+            ("consensus_only", "INTEGER DEFAULT 0"),
+            ("geo_top_n", "INTEGER DEFAULT 1"),
+            ("geo_check_enabled", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_def in rg_migrations:
+            if col_name not in rg_existing:
+                conn.execute(f"ALTER TABLE rating_groups ADD COLUMN {col_name} {col_def}")
+
         # RawProxy migrations
         cursor = conn.execute("PRAGMA table_info(raw_proxies)")
         raw_existing = {row[1] for row in cursor.fetchall()}
