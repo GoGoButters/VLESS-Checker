@@ -352,14 +352,37 @@ function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoTo
 }
 
 function copyWebhook(url) {
-    navigator.clipboard.writeText(url).then(() => {
+    function onSuccess() {
         const toast = document.getElementById('toast');
         toast.classList.remove('translate-y-20', 'opacity-0');
         setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
-    }).catch(err => {
-        console.error('Copy failed:', err);
-        alert('Failed to copy: ' + url);
-    });
+    }
+
+    function fallbackCopy(text) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            document.execCommand('copy');
+            onSuccess();
+        } catch(e) {
+            alert('Failed to copy: ' + text);
+        }
+        document.body.removeChild(ta);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(onSuccess).catch(function() {
+            fallbackCopy(url);
+        });
+    } else {
+        fallbackCopy(url);
+    }
 }
 </script>
 {% endblock %}
