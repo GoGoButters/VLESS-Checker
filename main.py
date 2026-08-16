@@ -730,6 +730,106 @@ async def remove_node_from_rating(request: Request, rating_id: int, node_id: int
 
     return RedirectResponse("/ratings", status_code=302)
 
+@app.get("/ratings/{rating_id}/proxies", response_class=HTMLResponse)
+async def rating_proxies_partial(request: Request, rating_id: int):
+    user = get_current_user(request)
+    if not user:
+        return PlainTextResponse("Unauthorized", status_code=401)
+
+    with Session(engine) as session:
+        group = session.get(RatingGroup, rating_id)
+        if not group:
+            return PlainTextResponse("Rating group not found", status_code=404)
+            
+        settings = session.exec(select(Settings)).first()
+
+        cleanup_stats = _cleanup_stale_node_data(session)
+        online_ids = set(cleanup_stats.get("online_ids", []))
+        
+        links = session.exec(select(NodeRatingLink).where(NodeRatingLink.rating_group_id == rating_id)).all()
+        linked_node_ids = {link.node_id for link in links}
+        target_node_ids = online_ids & linked_node_ids
+        
+        if not target_node_ids:
+            return templates.TemplateResponse(request, "proxy_table.html", {"proxies": []})
+            
+        all_results = session.exec(
+            select(NodeProxyResult)
+            .where(NodeProxyResult.tests_passed > 0)
+            .where(NodeProxyResult.node_id.in_(target_node_ids))
+        ).all()
+        
+    aggregated = {}
+    for r in all_results:
+        pid = get_proxy_identity(r.raw_url)
+        if pid not in aggregated:
+            aggregated[pid] = {"node_best": {}, "tests_total": r.tests_total}
+        agg = aggregated[pid]
+        nid = r.node_id
+        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
+            agg["node_best"][nid] = r
+        agg["tests_total"] = max(agg["tests_total"], r.tests_total)
+
+    proxy_list = []
+    for pid, agg in aggregated.items():
+        nc = len(agg["node_best"])
+        if nc == 0:
+            continue
+            
+        if group.consensus_only and nc < len(target_node_ids):
+            continue
+            
+        best_rows = list(agg["node_best"].values())
+        sum_scores = sum(r.speed_score for r in best_rows)
+        sum_dl = sum(r.download_speed_kbps for r in best_rows)
+        sum_ul = sum(r.upload_speed_kbps for r in best_rows)
+        
+        avg_dl = sum_dl // nc
+        avg_ul = sum_ul // nc
+        
+        if group.min_dl_kbps > 0 and avg_dl < group.min_dl_kbps: continue
+        if group.min_ul_kbps > 0 and avg_ul < group.min_ul_kbps: continue
+
+        best_ping = min(r.ping_ms for r in best_rows)
+        best_row = max(best_rows, key=lambda r: r.speed_score)
+
+        proxy_list.append({
+            "pid": pid,
+            "raw_url": best_row.raw_url,
+            "node_count": nc,
+            "avg_speed_score": round(sum_scores / nc, 1),
+            "avg_tests_passed": sum(r.tests_passed for r in best_rows) // nc,
+            "tests_total": max(r.tests_total for r in best_rows),
+            "best_ping_ms": best_ping,
+            "avg_dl_kbps": avg_dl,
+            "avg_ul_kbps": avg_ul,
+            "last_tested": max(r.last_tested for r in best_rows),
+            "country_name": getattr(best_row, "country_name", "") or "",
+        })
+
+    if settings.geo_check_enabled:
+        geo_top_n = max(1, group.geo_top_n or 1)
+        country_proxies = {}
+        for p in proxy_list:
+            country = p["country_name"].strip()
+            if not country or country.lower() == "unknown" or country.lower() == "украина":
+                continue
+            if country not in country_proxies:
+                country_proxies[country] = []
+            country_proxies[country].append(p)
+            
+        deduped_list = []
+        for country, proxies in country_proxies.items():
+            proxies.sort(key=lambda x: x["avg_speed_score"], reverse=True)
+            deduped_list.extend(proxies[:geo_top_n])
+        proxy_list = deduped_list
+        
+    proxy_list.sort(key=lambda x: (-x["node_count"], -x["avg_speed_score"]))
+    
+    if group.max_proxies > 0:
+        proxy_list = proxy_list[:group.max_proxies]
+
+    return templates.TemplateResponse(request, "proxy_table.html", {"proxies": proxy_list})
 
 # ---------------------------------------------------------------------------
 # LOGS page
