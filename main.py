@@ -1798,50 +1798,6 @@ def _compute_webhook_averages(
     return out
 
 
-# ---------------------------------------------------------------------------
-# WEBHOOK тАФ Public proxy distribution (from node results)
-# ---------------------------------------------------------------------------
-def _compute_webhook_averages(
-    results: list[NodeProxyResult],
-) -> dict[str, dict]:
-    """Aggregate per proxy identity: best result per node_id, then compute averages.
-
-    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float,
-                                    "node_ids": list, "country_name": str}
-    """
-    grouped: dict[str, dict] = {}
-    for r in results:
-        if r.tests_passed <= 0:
-            continue
-        pid = get_proxy_identity(r.raw_url)
-        if pid not in grouped:
-            grouped[pid] = {"node_best": {}, "total": r.tests_total}
-        agg = grouped[pid]
-        nid = r.node_id
-        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
-            agg["node_best"][nid] = r
-
-    out = {}
-    for pid, agg in grouped.items():
-        nc = len(agg["node_best"])
-        if nc == 0:
-            continue
-        rows = list(agg["node_best"].values())
-        node_ids = list(agg["node_best"].keys())
-        best_row = max(rows, key=lambda r: r.speed_score)
-        # Pick country_name from the best-scoring row (most reliable result)
-        country = getattr(best_row, "country_name", "") or ""
-        out[pid] = {
-            "raw_url": best_row.raw_url,
-            "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
-            "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
-            "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
-            "node_ids": node_ids,
-            "country_name": country,
-        }
-    return out
-
-
 
 @app.get("/{secret_path:path}")
 async def webhook_output(secret_path: str):
