@@ -341,31 +341,33 @@ async def detect_proxy_country(
 
             local_proxy = f"socks5://127.0.0.1:{socks_port}"
 
-            async with httpx.AsyncClient(
-                proxy=local_proxy,
-                timeout=httpx.Timeout(float(timeout_s)),
-                verify=False,
-                follow_redirects=True,
-            ) as client:
-                # Try each GeoIP API until one works
-                for api in GEOIP_APIS:
-                    try:
-                        resp = await client.get(api["url"])
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            country_code = data.get(api["key"], "")
-                            if country_code and len(country_code) == 2:
-                                country_ru = get_country_name_ru(country_code)
-                                logger.debug(
-                                    f"Geo detected: {country_code} → {country_ru} "
-                                    f"(via {api['url']})"
-                                )
-                                return country_ru
-                    except Exception as e:
-                        logger.debug(f"GeoIP API {api['url']} failed: {e}")
-                        continue
-
-            return ""
+            try:
+                async with httpx.AsyncClient(
+                    proxy=local_proxy,
+                    timeout=httpx.Timeout(float(timeout_s)),
+                    verify=False,
+                    follow_redirects=True,
+                ) as client:
+                    # Try each GeoIP API until one works
+                    for api in GEOIP_APIS:
+                        try:
+                            resp = await client.get(api["url"])
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                country_code = data.get(api["key"], "")
+                                if country_code and len(country_code) == 2:
+                                    country_ru = get_country_name_ru(country_code)
+                                    logger.debug(
+                                        f"Geo detected: {country_code} → {country_ru} "
+                                        f"(via {api['url']})"
+                                    )
+                                    return country_ru
+                        except Exception as e:
+                            logger.debug(f"GeoIP API {api['url']} failed: {e}")
+                            continue
+            except Exception as e:
+                logger.debug(f"GeoIP proxy connection failed: {e}")
+                return ""
 
         finally:
             try:
