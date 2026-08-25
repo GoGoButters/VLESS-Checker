@@ -248,6 +248,13 @@ def _migrate_db():
         # Subscription migrations
         cursor = conn.execute("PRAGMA table_info(subscriptions)")
         sub_existing = {row[1] for row in cursor.fetchall()}
+        sub_migrations = [
+            ("is_enabled", "INTEGER DEFAULT 1"),
+            ("last_config_count", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_def in sub_migrations:
+            if col_name not in sub_existing:
+                conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col_name} {col_def}")
         
         # RatingGroup migrations
         cursor = conn.execute("PRAGMA table_info(rating_groups)")
