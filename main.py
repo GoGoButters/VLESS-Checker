@@ -8,11 +8,24 @@ The master panel does NOT run any proxy tests. It serves as a manager:
 """
 
 import copy
+import time as _time
 
 class TokenAuthMiddleware:
     def __init__(self, asgi_app, token_field: str):
         self.asgi_app = asgi_app
         self.token_field = token_field
+        self._cached_token: str | None = None
+        self._cached_ts: float = 0.0
+        self._cache_ttl: float = 60.0
+
+    def _get_expected_token(self) -> str:
+        now = _time.monotonic()
+        if self._cached_token is None or (now - self._cached_ts) > self._cache_ttl:
+            with Session(engine) as session:
+                s = session.exec(select(Settings)).first()
+                self._cached_token = getattr(s, self.token_field, "") if s else ""
+                self._cached_ts = now
+        return self._cached_token or ""
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
@@ -24,9 +37,7 @@ class TokenAuthMiddleware:
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
 
-        with Session(engine) as session:
-            s = session.exec(select(Settings)).first()
-            expected_token = getattr(s, self.token_field, "") if s else ""
+        expected_token = self._get_expected_token()
 
         if not expected_token or token != expected_token:
             await send({
@@ -571,6 +582,7 @@ async def regenerate_node_token(request: Request):
             settings.node_api_token = secrets.token_hex(16)
             session.add(settings)
             session.commit()
+            invalidate_node_token_cache()
     return RedirectResponse("/settings", status_code=302)
 
 
@@ -952,16 +964,35 @@ async def force_node_test(request: Request, node_id: int):
     return {"status": "ok"}
 
 
-# ---------------------------------------------------------------------------
-# NODE API — Bearer Token Auth
-# ---------------------------------------------------------------------------
+# Cache for node API token to avoid DB hit on every request
+_cached_node_token: str | None = None
+_cached_node_token_ts: float = 0.0
+_NODE_TOKEN_CACHE_TTL = 60.0  # seconds
+
+def _get_cached_node_token() -> str:
+    """Return the cached node_api_token, refreshing from DB every 60s."""
+    import time
+    global _cached_node_token, _cached_node_token_ts
+    now = time.monotonic()
+    if _cached_node_token is None or (now - _cached_node_token_ts) > _NODE_TOKEN_CACHE_TTL:
+        with Session(engine) as session:
+            settings = session.exec(select(Settings)).first()
+            _cached_node_token = (settings.node_api_token if settings else "") or ""
+            _cached_node_token_ts = now
+    return _cached_node_token
+
+def invalidate_node_token_cache():
+    """Call after token is changed in settings to force re-read."""
+    global _cached_node_token, _cached_node_token_ts
+    _cached_node_token = None
+    _cached_node_token_ts = 0.0
+
 def _verify_node_token(authorization: str | None) -> bool:
     if not authorization or not authorization.startswith("Bearer "):
         return False
     token = authorization[7:]
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        return settings and settings.node_api_token and token == settings.node_api_token
+    expected = _get_cached_node_token()
+    return bool(expected) and token == expected
 
 
 @app.post("/api/node/register")

@@ -19,8 +19,13 @@ engine = create_engine(
     echo=False,
     connect_args={
         "check_same_thread": False,
-        "timeout": 15.0,
+        "timeout": 30.0,
     },
+    pool_size=20,
+    max_overflow=40,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_timeout=60,
 )
 
 
