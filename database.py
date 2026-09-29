@@ -35,6 +35,8 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA wal_autocheckpoint=256")
+    cursor.execute("PRAGMA journal_size_limit=67108864")  # 64MB max WAL size
     cursor.close()
 
 
@@ -325,6 +327,19 @@ def _migrate_db():
         except Exception:
             pass  # Index already exists or table doesn't exist yet
 
+        # Additional indexes for filtered queries (avoid full-table scans)
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_npr_raw_url "
+                "ON node_proxy_results (raw_url)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_npr_node_id "
+                "ON node_proxy_results (node_id)"
+            )
+        except Exception:
+            pass
+
         # NodeProxyResult migrations
         try:
             cursor = conn.execute("PRAGMA table_info(node_proxy_results)")
@@ -335,6 +350,13 @@ def _migrate_db():
             pass  # Table doesn't exist yet
 
         conn.commit()
+
+        # Compact WAL on startup (prevents bloated WAL from eating cgroup memory)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
+
         conn.close()
 
         # Drop legacy tables

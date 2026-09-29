@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 from sqlmodel import Session, select, delete
+from sqlalchemy import text
 
 from database import Settings, Subscription, RawProxy, NodeProxyResult, engine, generation_id
 from subs_manager import fetch_and_parse_subscriptions
@@ -101,11 +102,15 @@ async def _scheduler_loop():
                         pass
 
                 if retention_limit > 0:
-                    existing_rp = session.exec(select(RawProxy)).all()
+                    # Lightweight projection — only the 2 columns we need
+                    from sqlmodel import select as sel
+                    retention_rows = session.exec(
+                        select(RawProxy.raw_url, RawProxy.retention_cycles)
+                    ).all()
                     old_retention: dict[str, int] = {}
-                    for rp in existing_rp:
-                        key = rp.raw_url.split("#", 1)[0]
-                        old_retention[key] = rp.retention_cycles
+                    for raw_url, cycles in retention_rows:
+                        key = raw_url.split("#", 1)[0]
+                        old_retention[key] = cycles
                 else:
                     old_retention = {}
 
@@ -160,6 +165,12 @@ async def _scheduler_loop():
                     import database
                     database.generation_id = str(uuid.uuid4())
                     logger.info(f"Scheduler: updated generation_id={database.generation_id}")
+
+                    # Compact WAL after bulk write to keep file cache footprint low
+                    try:
+                        session.exec(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+                    except Exception:
+                        pass
                 else:
                     logger.warning("Scheduler: no proxy links found from subscriptions")
 

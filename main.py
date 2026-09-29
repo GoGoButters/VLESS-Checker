@@ -1287,18 +1287,19 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
 
     logger.info(f"Node {node_id} reported {len(results)} results ({passed} passed), is_partial={is_partial}")
 
-    # Evaluate bans across all nodes (optionally limit to chunk_urls)
-    background_tasks.add_task(_evaluate_bans, chunk_urls if is_partial else None)
+    # Evaluate bans only for the URLs in this chunk (never full-table scan)
+    if chunk_urls:
+        background_tasks.add_task(_evaluate_bans, chunk_urls)
 
     return {"status": "ok", "accepted": len(results)}
 
 
 def _evaluate_bans(raw_urls: list[str] | None = None):
-    """Evaluate ban status for all proxies based on cross-node consensus.
+    """Evaluate ban status for proxies based on cross-node consensus.
 
     Args:
-        raw_urls: Optional list to limit evaluation to specific proxies (for chunked mode).
-                  If None, evaluates all tested proxies.
+        raw_urls: List of proxy URLs to evaluate (from the current chunk).
+                  If None or empty, returns immediately — never scans the full table.
 
     Rules:
     - A proxy is considered 'failed' only if it failed on ALL connected workers
@@ -1306,6 +1307,14 @@ def _evaluate_bans(raw_urls: list[str] | None = None):
     - Ban only after N consecutive failures (ban_after_n_failures setting)
     """
     try:
+        # Never do a full-table scan — require explicit URL list
+        if not raw_urls:
+            return
+
+        batch_urls = list(set(raw_urls))
+        if not batch_urls:
+            return
+
         with Session(engine) as session:
             settings = session.exec(select(Settings)).first()
             if not settings or settings.ban_duration_hours <= 0:
@@ -1314,82 +1323,86 @@ def _evaluate_bans(raw_urls: list[str] | None = None):
             ban_threshold = settings.ban_after_n_failures or 3
             ban_duration = settings.ban_duration_hours
 
-            # Get all online nodes that have reported results
-            nodes = session.exec(select(Node).where(Node.is_online == True)).all()
-            if not nodes:
+            # Get online node IDs only (lightweight — just the id column)
+            node_id_rows = session.exec(
+                select(Node.id).where(Node.is_online == True)
+            ).all()
+            if not node_id_rows:
                 return
+            node_ids = [int(r[0]) if isinstance(r, tuple) else int(r) for r in node_id_rows]
+            node_ids_set = set(node_ids)
 
-            node_ids = [n.id for n in nodes]
-
-            # Get all NodeProxyResults grouped by raw_url
-            all_results = session.exec(select(NodeProxyResult)).all()
-            
-            # Build per-proxy result map: raw_url -> {node_id: tests_passed}
-            proxy_node_results = defaultdict(dict)
-            for r in all_results:
-                if r.node_id in node_ids:
-                    proxy_node_results[r.raw_url][r.node_id] = r.tests_passed
-
-            # Get all raw proxies that were tested (have results from at least one node)
-            tested_urls = set(proxy_node_results.keys())
-            if not tested_urls:
-                return
-
-            # If raw_urls provided (chunked mode), intersect with tested_urls
-            if raw_urls:
-                tested_urls = tested_urls & set(raw_urls)
-                if not tested_urls:
-                    return
-
-            # Evaluate each tested proxy
             banned_count = 0
             reset_count = 0
-            now_iso = datetime.now(timezone.utc).isoformat()
 
-            # Load tested RawProxies in chunks to avoid SQLite limits
-            tested_urls_list = list(tested_urls)
-            raw_proxy_map = {}
-            for i in range(0, len(tested_urls_list), 900):
-                chunk = tested_urls_list[i:i+900]
-                chunk_rps = session.exec(select(RawProxy).where(RawProxy.raw_url.in_(chunk))).all()
-                for rp in chunk_rps:
-                    raw_proxy_map[rp.raw_url] = rp
+            BATCH = 500
+            for i in range(0, len(batch_urls), BATCH):
+                chunk = batch_urls[i:i + BATCH]
 
-            for raw_url in tested_urls:
-                rp = raw_proxy_map.get(raw_url)
-                if not rp:
+                # Column projection — only the 3 columns we need, no full ORM objects
+                rows = session.exec(
+                    select(
+                        NodeProxyResult.raw_url,
+                        NodeProxyResult.node_id,
+                        NodeProxyResult.tests_passed,
+                    ).where(NodeProxyResult.raw_url.in_(chunk))
+                ).all()
+
+                per_url: dict[str, dict[int, int]] = defaultdict(dict)
+                for raw_url, nid, tp in rows:
+                    if nid in node_ids_set:
+                        per_url[raw_url][nid] = tp
+
+                if not per_url:
                     continue
 
-                node_results = proxy_node_results[raw_url]
-                
-                # Check if proxy passed on at least one worker
-                passed_on_any = any(tp > 0 for tp in node_results.values())
+                # Load only the RawProxy rows we actually need
+                rps = session.exec(
+                    select(RawProxy).where(
+                        RawProxy.raw_url.in_(list(per_url.keys()))
+                    )
+                ).all()
+                rp_map = {rp.raw_url: rp for rp in rps}
 
-                if passed_on_any:
-                    # Passed on at least one node → reset failures, unban if banned
-                    if rp.consecutive_failures > 0:
-                        rp.consecutive_failures = 0
-                        rp.banned_until = None
-                        reset_count += 1
-                else:
-                    # Failed on all nodes that tested it
-                    # Only count as failure if tested on ALL connected nodes
-                    tested_on_all = all(nid in node_results for nid in node_ids)
-                    if tested_on_all:
-                        rp.consecutive_failures += 1
-                        if rp.consecutive_failures >= ban_threshold:
-                            ban_until = (datetime.now(timezone.utc) + timedelta(hours=ban_duration)).isoformat()
-                            rp.banned_until = ban_until
-                            banned_count += 1
+                for raw_url, node_results in per_url.items():
+                    rp = rp_map.get(raw_url)
+                    if not rp:
+                        continue
 
-                session.add(rp)
+                    passed_on_any = any(tp > 0 for tp in node_results.values())
 
-            session.commit()
+                    if passed_on_any:
+                        if rp.consecutive_failures > 0:
+                            rp.consecutive_failures = 0
+                            rp.banned_until = None
+                            reset_count += 1
+                    else:
+                        tested_on_all = all(nid in node_results for nid in node_ids)
+                        if tested_on_all:
+                            rp.consecutive_failures += 1
+                            if rp.consecutive_failures >= ban_threshold:
+                                rp.banned_until = (
+                                    datetime.now(timezone.utc)
+                                    + timedelta(hours=ban_duration)
+                                ).isoformat()
+                                banned_count += 1
+
+                    session.add(rp)
+
+                # Commit per batch to avoid holding large transaction
+                session.commit()
+                session.expunge_all()
 
             if banned_count > 0:
-                logger.info(f"Banned {banned_count} proxies (failed {ban_threshold}+ times on all {len(node_ids)} nodes, ban={ban_duration}h)")
+                logger.info(
+                    f"Banned {banned_count} proxies (failed {ban_threshold}+ times "
+                    f"on all {len(node_ids)} nodes, ban={ban_duration}h)"
+                )
             if reset_count > 0:
-                logger.info(f"Reset {reset_count} proxy failure counters (passed on at least one node)")
+                logger.info(
+                    f"Reset {reset_count} proxy failure counters "
+                    f"(passed on at least one node)"
+                )
 
     except Exception as e:
         logger.error(f"Error evaluating bans: {e}", exc_info=True)
@@ -1701,11 +1714,14 @@ async def _background_fetch():
                     pass
 
             if retention_limit > 0:
-                existing_rp = session.exec(select(RawProxy)).all()
+                # Lightweight projection — only fetch the 2 columns we need, not full ORM objects
+                retention_rows = session.exec(
+                    select(RawProxy.raw_url, RawProxy.retention_cycles)
+                ).all()
                 old_retention: dict[str, int] = {}
-                for rp in existing_rp:
-                    key = rp.raw_url.split("#", 1)[0]
-                    old_retention[key] = rp.retention_cycles
+                for raw_url, cycles in retention_rows:
+                    key = raw_url.split("#", 1)[0]
+                    old_retention[key] = cycles
             else:
                 old_retention = {}
 
