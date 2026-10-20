@@ -14,6 +14,13 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1
+    # Bound container logs: an unbounded json-file log grew to ~10GB on the
+    # worker host and filled the disk (docker defaults to unlimited).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   vpn_data:

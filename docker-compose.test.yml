@@ -12,6 +12,11 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   node:
     build:
@@ -27,3 +32,8 @@ services:
       - NODE_REGION=LOCAL
     depends_on:
       - panel
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
