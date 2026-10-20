@@ -18,7 +18,11 @@ services:
       - 8.8.8.8
       - 1.1.1.1
     # Memory ceiling is server-specific too: set PANEL_MEM in .env (e.g. 512m).
+    # memswap_limit == mem_limit disables swap for the container: the panel was
+    # observed with 323MB swapped out and 4.5M memory.max reclaim events, which
+    # is slower than failing fast. Raise PANEL_MEM if the host has headroom.
     mem_limit: ${PANEL_MEM:-512m}
+    memswap_limit: ${PANEL_MEM:-512m}
     # Bound container logs: an unbounded json-file log grew to ~10GB on the
     # worker host and filled the disk (docker defaults to unlimited).
     logging:
