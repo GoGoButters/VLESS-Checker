@@ -1,12 +1,15 @@
 """Database models and engine setup for VPN Checker."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text, event
 from sqlmodel import Field, SQLModel, create_engine, Session, UniqueConstraint
+
+logger = logging.getLogger("vpn_checker.database")
 
 DATABASE_URL = "sqlite:///./data/vpn_checker.db"
 
@@ -37,6 +40,11 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA wal_autocheckpoint=256")
     cursor.execute("PRAGMA journal_size_limit=67108864")  # 64MB max WAL size
+    # Cap SQLite page cache (default 2MB is fine, but be explicit): the DB file
+    # page cache is charged to the container cgroup, so keep it bounded.
+    cursor.execute("PRAGMA cache_size=-16000")  # 16MB
+    cursor.execute("PRAGMA temp_store=MEMORY")
+    cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 
@@ -327,15 +335,35 @@ def _migrate_db():
         except Exception:
             pass  # Index already exists or table doesn't exist yet
 
-        # Additional indexes for filtered queries (avoid full-table scans)
+        # Index hygiene: SQLModel already creates ix_node_proxy_results_raw_url /
+        # ix_node_proxy_results_node_id for the indexed columns. Older builds also
+        # created ix_npr_raw_url / ix_npr_node_id — exact duplicates that wasted
+        # ~250MB of file and slowed every write. Drop them when the canonical
+        # index exists; if it does not, keep the duplicate (it is still needed).
+        def _index_exists(name: str) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                (name,),
+            ).fetchone()
+            return row is not None
+
+        for dup, canonical in (
+            ("ix_npr_raw_url", "ix_node_proxy_results_raw_url"),
+            ("ix_npr_node_id", "ix_node_proxy_results_node_id"),
+        ):
+            if _index_exists(dup) and _index_exists(canonical):
+                try:
+                    conn.execute(f"DROP INDEX IF EXISTS {dup}")
+                    logger.info(f"Dropped duplicate index {dup} (canonical: {canonical})")
+                except Exception as e:
+                    logger.warning(f"Failed to drop duplicate index {dup}: {e}")
+
+        # Partial index: makes DISTINCT/aggregate scans filtered by tests_passed > 0
+        # cheap (these were the 45-67s scheduler queries on the bloated DB).
         try:
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_npr_raw_url "
-                "ON node_proxy_results (raw_url)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_npr_node_id "
-                "ON node_proxy_results (node_id)"
+                "CREATE INDEX IF NOT EXISTS ix_npr_passing "
+                "ON node_proxy_results (raw_url) WHERE tests_passed > 0"
             )
         except Exception:
             pass
@@ -351,9 +379,11 @@ def _migrate_db():
 
         conn.commit()
 
-        # Compact WAL on startup (prevents bloated WAL from eating cgroup memory)
+        # Let SQLite refresh its query-planner statistics for the new indexes.
+        # (WAL checkpointing/compaction is handled by db_maintenance.run_maintenance
+        #  at startup — doing TRUNCATE here on a bloated DB held the file open.)
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("PRAGMA optimize")
         except Exception:
             pass
 
