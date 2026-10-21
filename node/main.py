@@ -78,6 +78,27 @@ remote_log_handler = RemoteLogHandler()
 logger.addHandler(remote_log_handler)
 logging.getLogger("vpn_checker").addHandler(remote_log_handler)
 
+
+# Транспорты, которые чаще всего пробивают CDN/белые списки, проверяем первыми.
+_PRIORITY_MARKERS = ("type=xhttp", "type=splithttp", "type=httpupgrade")
+
+
+def sort_by_check_priority(urls):
+    """Стабильная сортировка: xhttp/splithttp → httpupgrade → всё остальное.
+
+    Порядок детерминированный, поэтому возобновление цикла по chunk_id после
+    перезапуска ноды остаётся корректным.
+    """
+    def rank(u: str) -> int:
+        low = u.lower()
+        for i, marker in enumerate(_PRIORITY_MARKERS):
+            if marker in low:
+                return i
+        return len(_PRIORITY_MARKERS)
+
+    return sorted(urls, key=rank)
+
+
 class NodeApp:
     def __init__(self):
         self.master_url = config.master_url.rstrip("/")
@@ -411,6 +432,8 @@ class NodeApp:
 
         # Fetch all proxies at once
         run_id, all_urls, total, chunk_size = await self.get_all_proxies()
+        if all_urls:
+            all_urls = sort_by_check_priority(all_urls)
         if not all_urls:
             logger.info("No proxies available from master. Idling.")
             await self.report_status("idle", 0, 0, self.generation_id)

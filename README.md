@@ -290,7 +290,12 @@ docker compose up -d --build
 | **xhttp / splithttp** | **Xray-core** | sing-box 1.11 не умеет xhttp (`FATAL: unknown transport type: xhttp`), а в сетях с белыми списками обходы почти всегда на xhttp (CDN-адреса, порты 2053/8443) |
 
 Выбор ядра автоматический (`engine_driver.needs_xray()`), конфиг собирается из той же
-разобранной ссылки. Xray-core вшивается в образы панели и воркера (см. `Dockerfile`,
+разобранной ссылки.
+
+Воркер перед нарезкой на чанки сортирует список так, чтобы первыми проверялись
+транспорты, которые чаще пробивают CDN/белые списки: `xhttp`/`splithttp` → `httpupgrade`
+→ остальные (`node/main.py::sort_by_check_priority`). Порядок детерминированный, поэтому
+возобновление цикла после перезапуска ноды не ломается. Xray-core вшивается в образы панели и воркера (см. `Dockerfile`,
 `node/Dockerfile`, версии в `ARG XRAY_VERSION` / `ARG SINGBOX_VERSION`).
 
 ### Переменные окружения проверки
