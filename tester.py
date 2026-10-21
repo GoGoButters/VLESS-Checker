@@ -12,10 +12,22 @@ from sqlmodel import Session, select
 
 from database import ProxyResult, Settings, TestUrl, engine
 from proxy_parsers import parse_proxy_url
+from engine_driver import start_engine, needs_xray, engine_for
 
 logger = logging.getLogger("vpn_checker.tester")
 
 SINGBOX_PATH = os.environ.get("SINGBOX_PATH", "/usr/local/bin/sing-box")
+XRAY_PATH = os.environ.get("XRAY_PATH", "/usr/local/bin/xray")
+
+# --- Настройки проверки (переопределяются переменными окружения) -----------
+# TCP_PING_GATE=0 — не отбрасывать прокси по TCP-пингу (для сетей, где
+#   TCP-рукопожатие к серверу нестабильно; решает тест через туннель).
+PING_GATE = os.environ.get("TCP_PING_GATE", "1").lower() not in ("0", "false", "no", "off")
+PING_TIMEOUT_S = float(os.environ.get("TCP_PING_TIMEOUT_S", "3"))
+PING_THRESHOLD_OVERRIDE = int(os.environ.get("PING_THRESHOLD_MS_OVERRIDE", "0") or 0)
+ENGINE_START_WAIT_S = float(os.environ.get("ENGINE_START_WAIT_S", "4"))
+TEST_URL_RETRIES = max(1, int(os.environ.get("TEST_URL_RETRIES", "2")))
+MAX_CONSECUTIVE_FAILURES = max(1, int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "3")))
 
 # Global state for test progress
 test_status = {
@@ -75,120 +87,114 @@ def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
     }
 
 
-async def _check_single_proxy(
-    proxy_url: str,
-    semaphore: asyncio.Semaphore,
-    ping_threshold: int,
-    http_timeout_s: int,
-    test_urls: list[dict],
-) -> tuple[str, int, int, int] | None:
-    """Check a single proxy against all test URLs."""
-    async with semaphore:
-        parsed_outbound = parse_proxy_url(proxy_url)
-        if not parsed_outbound:
-            test_status["checked"] += 1
-            test_status["failed"] += 1
-            return None
+async def _run_test_urls(socks_port: int, test_urls: list[dict], http_timeout_s: int,
+                         label: str = "") -> tuple[int, int]:
+    """Прогон тестовых URL через локальный SOCKS. Возвращает (passed, total).
 
-        target_host = parsed_outbound.get("server", "")
-        target_port = int(parsed_outbound.get("server_port", 443))
-        
-        ping = await _tcp_ping(target_host, target_port)
-        if ping is None or ping > ping_threshold:
-            test_status["checked"] += 1
-            test_status["failed"] += 1
-            return None
+    Каждый URL пробуется TEST_URL_RETRIES раз: у только что поднятого туннеля
+    первый запрос часто отваливается («холодный старт»). После
+    MAX_CONSECUTIVE_FAILURES неудач подряд прогон прекращается, чтобы мёртвый
+    прокси не тратил все таймауты.
+    """
+    local_proxy_url = f"socks5://127.0.0.1:{socks_port}"
+    total = len(test_urls)
+    passed = 0
+    consecutive_failures = 0
 
-        # Step 2: sing-box subprocess — run all test URL checks through the same proxy instance
-        socks_port = _get_free_port()
-        config = _build_singbox_config(parsed_outbound, socks_port)
-
-        config_fd, config_path = tempfile.mkstemp(suffix=".json", prefix="sing_")
-        try:
-            with os.fdopen(config_fd, "w") as f:
-                json.dump(config, f)
-
-            proc = await asyncio.create_subprocess_exec(
-                SINGBOX_PATH,
-                "run",
-                "-c",
-                config_path,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-
+    for tu in test_urls:
+        ok = False
+        last_error = ""
+        for _attempt in range(TEST_URL_RETRIES):
             try:
-                await asyncio.sleep(1.0)
-
-                if proc.returncode is not None:
-                    test_status["checked"] += 1
-                    test_status["failed"] += 1
-                    return None
-
-                local_proxy_url = f"socks5://127.0.0.1:{socks_port}"
-                tests_total = len(test_urls)
-                tests_passed = 0
-
-                # Run each test URL sequentially through the same sing-box instance
-                for tu in test_urls:
-                    try:
-                        use_verify = not tu["url"].endswith("/generate_204")
-                        async with httpx.AsyncClient(
-                            proxy=local_proxy_url,
-                            timeout=httpx.Timeout(float(http_timeout_s)),
-                            verify=use_verify,
-                            follow_redirects=True,
-                        ) as client:
-                            resp = await client.get(tu["url"])
-                            body_len = len(resp.content)
-                            if (
-                                resp.status_code == tu["expect_status"]
-                                and body_len >= tu["min_body_bytes"]
-                            ):
-                                tests_passed += 1
-                            else:
-                                logger.warning(
-                                    f"Test URL {tu['url']} failed for {target_host}:{target_port} "
-                                    f"(status={resp.status_code}, expected={tu['expect_status']}, "
-                                    f"body={body_len}b, min={tu['min_body_bytes']}b)"
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            f"Test URL {tu['url']} error for {target_host}:{target_port}: {e}"
-                        )
-
-                # A proxy must pass at least 1 test to be saved
-                if tests_passed > 0:
-                    test_status["checked"] += 1
-                    test_status["passed"] += 1
-                    logger.info(
-                        f"✓ PASS [{ping}ms] {tests_passed}/{tests_total} "
-                        f"{target_host}:{target_port}"
-                    )
-                    return (proxy_url, ping, tests_passed, tests_total)
-                else:
-                    test_status["checked"] += 1
-                    test_status["failed"] += 1
-                    return None
-
+                use_verify = not tu["url"].endswith("/generate_204")
+                async with httpx.AsyncClient(
+                    proxy=local_proxy_url,
+                    timeout=httpx.Timeout(float(http_timeout_s)),
+                    verify=use_verify,
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(tu["url"])
+                    body_len = len(resp.content)
+                    if resp.status_code == tu["expect_status"] and body_len >= tu["min_body_bytes"]:
+                        ok = True
+                        break
+                    last_error = (f"status={resp.status_code} (ждём {tu['expect_status']}), "
+                                  f"body={body_len}b (мин {tu['min_body_bytes']}b)")
             except Exception as e:
-                logger.warning(f"Proxy check failed for {target_host}:{target_port}: {e}")
-                test_status["checked"] += 1
-                test_status["failed"] += 1
-            finally:
-                try:
-                    proc.terminate()
-                    await asyncio.wait_for(proc.wait(), timeout=3.0)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                last_error = f"{type(e).__name__}: {e}"
+
+        if ok:
+            passed += 1
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            logger.warning(f"Test URL {tu['url']} не прошёл для {label}: {last_error}")
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.info(f"{label}: прогон URL прерван после {consecutive_failures} неудач подряд")
+                break
+
+    return passed, total
+
+
+async def _check_one(proxy_url: str, semaphore: asyncio.Semaphore, ping_threshold: int,
+                     http_timeout_s: int, test_urls: list[dict], status_ref: dict) -> tuple | None:
+    """Проверка одного прокси: TCP-пинг → поднятие туннеля → тестовые URL."""
+    async with semaphore:
+        try:
+            parsed_outbound = parse_proxy_url(proxy_url)
+        except Exception:
+            parsed_outbound = None
+        if not parsed_outbound:
+            status_ref["checked"] += 1
+            status_ref["failed"] += 1
+            return None
+
+        host = parsed_outbound.get("server", "")
+        port = int(parsed_outbound.get("server_port", 443))
+
+        ping = await _tcp_ping(host, port, timeout=PING_TIMEOUT_S)
+        threshold = PING_THRESHOLD_OVERRIDE or ping_threshold
+        if PING_GATE and (ping is None or ping > threshold):
+            status_ref["checked"] += 1
+            status_ref["failed"] += 1
+            return None
+
+        socks_port = _get_free_port()
+        handle = await start_engine(parsed_outbound, socks_port, wait_s=ENGINE_START_WAIT_S)
+        if handle is None:
+            status_ref["checked"] += 1
+            status_ref["failed"] += 1
+            return None
+
+        try:
+            tests_passed, tests_total = await _run_test_urls(
+                socks_port, test_urls, http_timeout_s, label=f"{host}:{port} [{handle.engine}]"
+            )
         finally:
-            try:
-                os.unlink(config_path)
-            except Exception:
-                pass
+            await handle.stop()
+
+        if tests_passed > 0:
+            status_ref["checked"] += 1
+            status_ref["passed"] += 1
+            logger.info(f"✓ PASS [{handle.engine}] [{ping}ms] {tests_passed}/{tests_total} {host}:{port}")
+            return (proxy_url, ping or 0, tests_passed, tests_total)
+
+        status_ref["checked"] += 1
+        status_ref["failed"] += 1
+        return None
+
+
+async def _check_single_proxy(proxy_url: str, semaphore: asyncio.Semaphore, ping_threshold: int,
+                              http_timeout_s: int, test_urls: list[dict]) -> tuple | None:
+    """Совместимость со старым API (мастерская проверка одиночного прокси)."""
+    return await _check_one(proxy_url, semaphore, ping_threshold, http_timeout_s, test_urls, test_status)
+
+
+async def _check_single_proxy_internal(proxy_url: str, semaphore: asyncio.Semaphore, ping_threshold: int,
+                                       http_timeout_s: int, test_urls: list[dict],
+                                       status_ref: dict, singbox_path: str = "") -> tuple | None:
+    """Совместимость со старым API (проверка на удалённой ноде)."""
+    return await _check_one(proxy_url, semaphore, ping_threshold, http_timeout_s, test_urls, status_ref)
 
 
 async def run_proxy_checks(
@@ -204,10 +210,17 @@ async def run_proxy_checks(
     """
     Core testing loop used by both master and remote nodes.
     Returns a list of ProxyResult objects.
+
+    Движок выбирается по каждому прокси: sing-box или Xray-core
+    (xhttp/splithttp умеет только Xray) — см. engine_driver.
     """
+    override = int(os.environ.get("CONCURRENT_CHECKS_OVERRIDE", "0") or 0)
+    if override > 0:
+        concurrent_limit = override
+
     semaphore = asyncio.Semaphore(concurrent_limit)
     tasks = [
-        _check_single_proxy_internal(link, semaphore, ping_threshold, http_timeout_s, test_urls, status_dict, singbox_path)
+        _check_one(link, semaphore, ping_threshold, http_timeout_s, test_urls, status_dict)
         for link in proxy_links
     ]
     results = await asyncio.gather(*tasks)
@@ -225,104 +238,6 @@ async def run_proxy_checks(
                 tested_at=now
             ))
     return valid
-
-
-async def _check_single_proxy_internal(
-    proxy_url: str,
-    semaphore: asyncio.Semaphore,
-    ping_threshold: int,
-    http_timeout_s: int,
-    test_urls: list[dict],
-    status_ref: dict,
-    singbox_path: str
-) -> tuple[str, int, int, int] | None:
-    """Internal helper that updates the provided status dictionary."""
-    async with semaphore:
-        parsed_outbound = parse_proxy_url(proxy_url)
-        if not parsed_outbound:
-            status_ref["checked"] += 1
-            status_ref["failed"] += 1
-            return None
-
-        target_host = parsed_outbound.get("server", "")
-        target_port = int(parsed_outbound.get("server_port", 443))
-        
-        ping = await _tcp_ping(target_host, target_port)
-        if ping is None or ping > ping_threshold:
-            status_ref["checked"] += 1
-            status_ref["failed"] += 1
-            return None
-
-        # Step 2: sing-box subprocess
-        socks_port = _get_free_port()
-        config = _build_singbox_config(parsed_outbound, socks_port)
-        config_fd, config_path = tempfile.mkstemp(suffix=".json", prefix="sing_")
-        try:
-            with os.fdopen(config_fd, "w") as f:
-                json.dump(config, f)
-
-            proc = await asyncio.create_subprocess_exec(
-                singbox_path, "run", "-c", config_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            try:
-                await asyncio.sleep(1.0)
-                if proc.returncode is not None:
-                    status_ref["checked"] += 1
-                    status_ref["failed"] += 1
-                    return None
-
-                local_proxy_url = f"socks5://127.0.0.1:{socks_port}"
-                tests_total = len(test_urls)
-                tests_passed = 0
-
-                for tu in test_urls:
-                    try:
-                        use_verify = not tu["url"].endswith("/generate_204")
-                        async with httpx.AsyncClient(
-                            proxy=local_proxy_url,
-                            timeout=httpx.Timeout(float(http_timeout_s)),
-                            verify=use_verify,
-                            follow_redirects=True,
-                        ) as client:
-                            resp = await client.get(tu["url"])
-                            if resp.status_code == tu["expect_status"] and len(resp.content) >= tu["min_body_bytes"]:
-                                tests_passed += 1
-                    except Exception as e:
-                        logger.warning(f"Test URL {tu['url']} error (internal check): {e}")
-
-                if tests_passed > 0:
-                    status_ref["checked"] += 1
-                    status_ref["passed"] += 1
-                    return (proxy_url, ping, tests_passed, tests_total)
-                else:
-                    status_ref["checked"] += 1
-                    status_ref["failed"] += 1
-                    return None
-
-            finally:
-                try:
-                    if proc.returncode is None:
-                        proc.terminate()
-                        try:
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-                            if stderr:
-                                print("SINGBOX STDERR:", stderr.decode())
-                        except asyncio.TimeoutError:
-                            proc.kill()
-                    else:
-                        stdout, stderr = await proc.communicate()
-                        if stderr:
-                            print("SINGBOX STDERR (CRASH):", stderr.decode())
-                except Exception:
-                    pass
-        finally:
-            try:
-                os.unlink(config_path)
-            except Exception:
-                pass
 
 
 async def run_full_test(proxy_links: list[str]) -> list[ProxyResult]:

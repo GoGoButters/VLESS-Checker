@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 ARG SINGBOX_VERSION="1.11.4"
+ARG XRAY_VERSION="26.3.27"
 ARG ARCH="amd64"
 
 # Install basics and download sing-box
@@ -13,6 +14,13 @@ RUN wget -qO /tmp/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases
     && mv /tmp/sing-box-${SINGBOX_VERSION}-linux-${ARCH}/sing-box /usr/local/bin/ \
     && chmod +x /usr/local/bin/sing-box \
     && rm -rf /tmp/sing-box*
+
+# Xray-core нужен для транспортов, которых нет в sing-box (xhttp/splithttp).
+RUN wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip" \
+    && unzip -o -q /tmp/xray.zip -d /tmp/xray \
+    && mv /tmp/xray/xray /usr/local/bin/ \
+    && chmod +x /usr/local/bin/xray \
+    && rm -rf /tmp/xray*
 
 WORKDIR /app
 

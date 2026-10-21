@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from database import ProxyResult, Settings, engine
 from proxy_parsers import parse_proxy_url
+from engine_driver import start_engine
 
 logger = logging.getLogger("vpn_checker.speed_tester")
 
@@ -239,53 +240,26 @@ async def _measure_speed(proxy_url: str, timeout_s: int = 20,
         return None
 
     socks_port = _get_free_port()
-    config = _build_singbox_config(parsed_outbound, socks_port)
+    handle = await start_engine(parsed_outbound, socks_port,
+                                wait_s=float(os.environ.get("ENGINE_START_WAIT_S", "4")))
+    if handle is None:
+        return None
 
-    config_fd, config_path = tempfile.mkstemp(suffix=".json", prefix="speed_")
     try:
-        with os.fdopen(config_fd, "w") as f:
-            json.dump(config, f)
+        local_proxy = f"socks5://127.0.0.1:{socks_port}"
 
-        proc = await asyncio.create_subprocess_exec(
-            SINGBOX_PATH, "run", "-c", config_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        # Download speed test (multi-stream)
+        dl_kbps = await _measure_download(local_proxy, timeout_s,
+                                          extra_urls=extra_dl_urls)
 
-        try:
-            # Wait for sing-box to start and establish the tunnel
-            await asyncio.sleep(1.5)
+        # Upload speed test
+        ul_kbps = await _measure_upload(local_proxy, timeout_s)
 
-            if proc.returncode is not None:
-                return None
-
-            local_proxy = f"socks5://127.0.0.1:{socks_port}"
-
-            # Download speed test (multi-stream)
-            dl_kbps = await _measure_download(local_proxy, timeout_s,
-                                              extra_urls=extra_dl_urls)
-
-            # Upload speed test
-            ul_kbps = await _measure_upload(local_proxy, timeout_s)
-
-            if dl_kbps > 0:
-                return (dl_kbps, ul_kbps)
-            return None
-
-        finally:
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        if dl_kbps > 0:
+            return (dl_kbps, ul_kbps)
+        return None
     finally:
-        try:
-            os.unlink(config_path)
-        except Exception:
-            pass
+        await handle.stop()
 
 
 def _compute_speed_score(ping_ms: int, tests_passed: int, dl_kbps: int, ul_kbps: int) -> float:

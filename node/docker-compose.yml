@@ -12,5 +12,15 @@ services:
       - NODE_TOKEN=your_token_from_settings
       - NODE_NAME=us-east-worker-1
       - NODE_REGION=USA
+      # Проверка через туннель (см. README § «Ядра проверки»):
+      # в сети с белыми списками ядро поднимается медленнее, а TCP-рукопожатие
+      # к серверу нестабильно — прогон не должен падать из-за пинга.
+      - TCP_PING_TIMEOUT_S=5
+      - PING_THRESHOLD_MS_OVERRIDE=3000
+      - ENGINE_START_WAIT_S=5
+      # Контейнеру на 1 ГБ 50 одновременных ядер не по силам (swap/OOM).
+      - CONCURRENT_CHECKS_OVERRIDE=24
+      # Интерфейс для трафика к прокси (пусто = системный маршрут).
+      - BIND_INTERFACE=
     # Remove network mode if master running remotely
     network_mode: host 

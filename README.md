@@ -1,7 +1,7 @@
 # VPN Checker
 
 Автоматизированный агрегатор, тестер и дистрибьютор прокси-серверов с **распределённой архитектурой** (менеджер + воркеры).  
-Проект поддерживает множество протоколов (VLESS, VMess, Trojan, Shadowsocks, Hysteria2) благодаря использованию ядра [sing-box](https://sing-box.sagernet.org/).
+Проект поддерживает множество протоколов (VLESS, VMess, Trojan, Shadowsocks, Hysteria2) благодаря использованию ядер [sing-box](https://sing-box.sagernet.org/) и [Xray-core](https://github.com/XTLS/Xray-core): sing-box закрывает основной набор транспортов, Xray — xhttp/splithttp, которых в sing-box нет (в белых списках обходы почти всегда на xhttp).
 
 > **Статус**: Активная разработка. Недавно исправлены критические баги парсинга, добавлена система банов и standalone-режим для воркеров.
 
@@ -279,6 +279,37 @@ docker compose up -d --build
 3. Убедитесь, что в `node/config.py` настройка `concurrent_checks_limit` (по умолчанию 50) не завышена.
 
 База данных сохраняется в volume `vpn_data` и не стирается при обновлении.
+
+## Ядра проверки: sing-box + Xray-core
+
+Проверка каждого прокси идёт через локальный SOCKS-инбаунд того или иного ядра:
+
+| Транспорт | Ядро | Почему |
+|---|---|---|
+| tcp/raw, ws, grpc, httpupgrade, http/h2, quic | **sing-box** | поддерживает всё это |
+| **xhttp / splithttp** | **Xray-core** | sing-box 1.11 не умеет xhttp (`FATAL: unknown transport type: xhttp`), а в сетях с белыми списками обходы почти всегда на xhttp (CDN-адреса, порты 2053/8443) |
+
+Выбор ядра автоматический (`engine_driver.needs_xray()`), конфиг собирается из той же
+разобранной ссылки. Xray-core вшивается в образы панели и воркера (см. `Dockerfile`,
+`node/Dockerfile`, версии в `ARG XRAY_VERSION` / `ARG SINGBOX_VERSION`).
+
+### Переменные окружения проверки
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `BIND_INTERFACE` | пусто | сетевой интерфейс для трафика к прокси (например, `LTE` на стенде с белыми списками) |
+| `TCP_PING_GATE` | `1` | `0` — не отбрасывать прокси по TCP-пингу: в сетях с белыми списками рукопожатие к серверу нестабильно, решает тест через туннель |
+| `TCP_PING_TIMEOUT_S` | `3` | таймаут TCP-пинга |
+| `PING_THRESHOLD_MS_OVERRIDE` | `0` (не задан) | переопределить порог пинга из настроек панели (для LTE ставят 3000) |
+| `ENGINE_START_WAIT_S` | `4` | сколько ждать, пока ядро поднимет SOCKS-порт |
+| `TEST_URL_RETRIES` | `2` | попыток на каждый тестовый URL («холодный старт» туннеля) |
+| `MAX_CONSECUTIVE_FAILURES` | `3` | сколько неудач подряд до досрочного выхода из прогона URL |
+| `CONCURRENT_CHECKS_OVERRIDE` | `0` (не задан) | переопределить число параллельных проверок из настроек панели |
+| `XRAY_PATH` / `SINGBOX_PATH` | `/usr/local/bin/xray` / `sing-box` | пути к ядрам |
+
+Практика для воркера в белом списке (LTE): `TCP_PING_TIMEOUT_S=5`,
+`PING_THRESHOLD_MS_OVERRIDE=3000`, `ENGINE_START_WAIT_S=5`,
+`CONCURRENT_CHECKS_OVERRIDE=24` (контейнер на 1 ГБ не тянет 50 ядер одновременно).
 
 ## Технологии
 - FastAPI (Python 3.11+)
