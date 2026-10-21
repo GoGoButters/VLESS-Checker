@@ -20,6 +20,8 @@ services:
       - ENGINE_START_WAIT_S=5
       # Контейнеру на 1 ГБ 50 одновременных ядер не по силам (swap/OOM).
       - CONCURRENT_CHECKS_OVERRIDE=24
+      # «Висящий» туннель не должен съедать таймауты всех тестовых URL.
+      - PROXY_TIME_BUDGET_S=25
       # Интерфейс для трафика к прокси (пусто = системный маршрут).
       - BIND_INTERFACE=
     # Remove network mode if master running remotely

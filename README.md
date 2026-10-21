@@ -304,12 +304,13 @@ docker compose up -d --build
 | `ENGINE_START_WAIT_S` | `4` | сколько ждать, пока ядро поднимет SOCKS-порт |
 | `TEST_URL_RETRIES` | `2` | попыток на каждый тестовый URL («холодный старт» туннеля) |
 | `MAX_CONSECUTIVE_FAILURES` | `3` | сколько неудач подряд до досрочного выхода из прогона URL |
+| `PROXY_TIME_BUDGET_S` | `30` | общий бюджет времени на один прокси: «висящий» туннель не съедает таймауты всех URL |
 | `CONCURRENT_CHECKS_OVERRIDE` | `0` (не задан) | переопределить число параллельных проверок из настроек панели |
 | `XRAY_PATH` / `SINGBOX_PATH` | `/usr/local/bin/xray` / `sing-box` | пути к ядрам |
 
 Практика для воркера в белом списке (LTE): `TCP_PING_TIMEOUT_S=5`,
 `PING_THRESHOLD_MS_OVERRIDE=3000`, `ENGINE_START_WAIT_S=5`,
-`CONCURRENT_CHECKS_OVERRIDE=24` (контейнер на 1 ГБ не тянет 50 ядер одновременно).
+`CONCURRENT_CHECKS_OVERRIDE=24`, `PROXY_TIME_BUDGET_S=25` (контейнер на 1 ГБ не тянет 50 ядер одновременно).
 
 ## Технологии
 - FastAPI (Python 3.11+)

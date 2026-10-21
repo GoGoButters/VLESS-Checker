@@ -28,6 +28,9 @@ PING_THRESHOLD_OVERRIDE = int(os.environ.get("PING_THRESHOLD_MS_OVERRIDE", "0") 
 ENGINE_START_WAIT_S = float(os.environ.get("ENGINE_START_WAIT_S", "4"))
 TEST_URL_RETRIES = max(1, int(os.environ.get("TEST_URL_RETRIES", "2")))
 MAX_CONSECUTIVE_FAILURES = max(1, int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "3")))
+# Общий бюджет времени на один прокси: прокси, у которого туннель «висит»
+# (соединение есть, данных нет), не должен съедать все таймауты всех URL.
+PROXY_TIME_BUDGET_S = float(os.environ.get("PROXY_TIME_BUDGET_S", "30"))
 
 # Global state for test progress
 test_status = {
@@ -88,7 +91,7 @@ def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
 
 
 async def _run_test_urls(socks_port: int, test_urls: list[dict], http_timeout_s: int,
-                         label: str = "") -> tuple[int, int]:
+                         label: str = "", deadline: float | None = None) -> tuple[int, int]:
     """Прогон тестовых URL через локальный SOCKS. Возвращает (passed, total).
 
     Каждый URL пробуется TEST_URL_RETRIES раз: у только что поднятого туннеля
@@ -102,14 +105,21 @@ async def _run_test_urls(socks_port: int, test_urls: list[dict], http_timeout_s:
     consecutive_failures = 0
 
     for tu in test_urls:
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.info(f"{label}: бюджет времени {PROXY_TIME_BUDGET_S:.0f}с исчерпан, останавливаю прогон URL")
+            break
         ok = False
         last_error = ""
+        # не даём одному запросу выйти за общий бюджет прокси
+        req_timeout = float(http_timeout_s)
+        if deadline is not None:
+            req_timeout = max(3.0, min(req_timeout, deadline - time.monotonic()))
         for _attempt in range(TEST_URL_RETRIES):
             try:
                 use_verify = not tu["url"].endswith("/generate_204")
                 async with httpx.AsyncClient(
                     proxy=local_proxy_url,
-                    timeout=httpx.Timeout(float(http_timeout_s)),
+                    timeout=httpx.Timeout(req_timeout),
                     verify=use_verify,
                     follow_redirects=True,
                 ) as client:
@@ -159,6 +169,7 @@ async def _check_one(proxy_url: str, semaphore: asyncio.Semaphore, ping_threshol
             status_ref["failed"] += 1
             return None
 
+        deadline = time.monotonic() + PROXY_TIME_BUDGET_S
         socks_port = _get_free_port()
         handle = await start_engine(parsed_outbound, socks_port, wait_s=ENGINE_START_WAIT_S)
         if handle is None:
@@ -168,7 +179,8 @@ async def _check_one(proxy_url: str, semaphore: asyncio.Semaphore, ping_threshol
 
         try:
             tests_passed, tests_total = await _run_test_urls(
-                socks_port, test_urls, http_timeout_s, label=f"{host}:{port} [{handle.engine}]"
+                socks_port, test_urls, http_timeout_s,
+                label=f"{host}:{port} [{handle.engine}]", deadline=deadline
             )
         finally:
             await handle.stop()
