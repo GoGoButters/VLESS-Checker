@@ -10,12 +10,15 @@ from sqlmodel import Session, select
 
 
 from database import Subscription, RawProxy, Settings, engine
+from database import NodeProxyResult, SubscriptionTestStat  # [SUB-STATS]
 
 logger = logging.getLogger("vpn_checker.subs_manager")
 
 # Per-request HTTP budget. Some mirrors (e.g. gitverse.ru) regularly stall for
 # 20-32s; fail fast so one slow mirror cannot stretch the whole fetch cycle.
 HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+# [SUB-STATS] сколько последних выборок на источник держим в БД (страница берёт 5)
+SUB_STATS_KEEP = 10
 MAX_FETCH_WORKERS = 5
 
 
@@ -145,6 +148,21 @@ def fetch_and_parse_subscriptions_sync(
                     active_subs,
                 ))
 
+    # [SUB-STATS] какие конфиги сейчас считаются живыми (успели пройти тесты)
+    sub_id_by_url = {sub.url: sub.id for sub in active_subs}
+    good_ids: set[str] = set()
+    if session is not None:
+        with Session(engine) as res_session:
+            for row in res_session.exec(
+                select(NodeProxyResult.raw_url)
+                .where(NodeProxyResult.tests_passed > 0)
+                .distinct()
+            ).all():
+                url = row[0] if isinstance(row, tuple) else row
+                if url:
+                    good_ids.add(str(url).split("#", 1)[0])
+    stat_rows: list[tuple[int, int, int]] = []
+
     for sub_url, proxy_links in fetched:
         if proxy_links:
             # Filter out banned proxies
@@ -153,6 +171,12 @@ def fetch_and_parse_subscriptions_sync(
                 logger.info(f"Filtered out {len(proxy_links) - len(filtered)} banned proxies from {sub_url}")
             all_proxies.extend(filtered)
             sub_proxy_counts[sub_url] = len(filtered)
+            # [SUB-STATS] уникальные конфиги источника и сколько из них живо
+            if session is not None:
+                ids = {url.split("#", 1)[0] for url in filtered}
+                sub_id = sub_id_by_url.get(sub_url)
+                if sub_id is not None:
+                    stat_rows.append((sub_id, len(ids), len(ids & good_ids)))
             logger.info(f"Found {len(filtered)} proxy links in {sub_url}")
         else:
             sub_proxy_counts[sub_url] = 0
@@ -164,6 +188,29 @@ def fetch_and_parse_subscriptions_sync(
                 sub.last_config_count = sub_proxy_counts[sub.url]
         session.add_all(subs)
         session.commit()
+
+    # [SUB-STATS] пишем выборку за цикл; на источник держим только SUB_STATS_KEEP последних
+    if session is not None and stat_rows:
+        import database as _db
+        gen = str(getattr(_db, "generation_id", "") or "")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with Session(engine) as st:
+            for sub_id, tested, alive in stat_rows:
+                st.add(SubscriptionTestStat(
+                    subscription_id=sub_id, generation_id=gen,
+                    checked_at=now_iso, tested=tested, alive=alive,
+                ))
+            st.commit()
+            for sub_id, _tested, _alive in stat_rows:
+                rows_old = st.exec(
+                    select(SubscriptionTestStat)
+                    .where(SubscriptionTestStat.subscription_id == sub_id)
+                    .order_by(SubscriptionTestStat.id.desc())
+                ).all()
+                for row in rows_old[SUB_STATS_KEEP:]:
+                    st.delete(row)
+            st.commit()
+        logger.info(f"[SUB-STATS] записано выборок: {len(stat_rows)}")
 
     # Deduplicate by identity key (URL minus #remark)
     seen: dict[str, str] = {}

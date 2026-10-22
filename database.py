@@ -212,6 +212,17 @@ class NodeProxyResult(SQLModel, table=True):
     country_name: str = Field(default="")  # Detected country name in Russian (e.g. "США", "Германия")
 
 
+# [SUB-STATS] Одна выборка по источнику за цикл: сколько его прокси проверено и сколько живо.
+class SubscriptionTestStat(SQLModel, table=True):
+    __tablename__ = "subscription_test_stats"
+    id: int | None = Field(default=None, primary_key=True)
+    subscription_id: int = Field(index=True)
+    generation_id: str = Field(default="", index=True)
+    checked_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    tested: int = Field(default=0)   # уникальных конфигов источника в этом цикле
+    alive: int = Field(default=0)    # из них с успешными тестами (tests_passed > 0)
+
+
 def create_db_and_tables():
     """Create database tables if they don't exist."""
     import os
