@@ -634,6 +634,38 @@ async def regenerate_node_token(request: Request):
     return RedirectResponse("/settings", status_code=302)
 
 
+@app.post("/settings/regenerate-mcp-read-token")
+async def regenerate_mcp_read_token(request: Request):
+    """Regenerate the read-only MCP token (used by AI agents for read access)."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        if settings:
+            settings.mcp_read_token = secrets.token_urlsafe(32)
+            session.add(settings)
+            session.commit()
+    # TokenAuthMiddleware re-reads the token from settings with a 60s TTL,
+    # so the new value becomes effective within a minute without a restart.
+    return RedirectResponse("/settings", status_code=302)
+
+
+@app.post("/settings/regenerate-mcp-admin-token")
+async def regenerate_mcp_admin_token(request: Request):
+    """Regenerate the admin MCP token (full control over the panel via MCP)."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        if settings:
+            settings.mcp_admin_token = secrets.token_urlsafe(32)
+            session.add(settings)
+            session.commit()
+    return RedirectResponse("/settings", status_code=302)
+
+
 # ---------------------------------------------------------------------------
 # RATINGS GROUPS
 # ---------------------------------------------------------------------------
