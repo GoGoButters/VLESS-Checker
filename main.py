@@ -96,6 +96,7 @@ from auth import (
     SESSION_COOKIE,
 )
 from subs_manager import fetch_and_parse_subscriptions_sync
+from database import SubscriptionTestStat  # [SUB-STATS]
 from scheduler import (
     start_scheduler,
     scheduler_status,
@@ -399,6 +400,34 @@ def _dashboard_stats() -> dict:
 # ---------------------------------------------------------------------------
 # SUBSCRIPTIONS
 # ---------------------------------------------------------------------------
+# [SUB-STATS] сколько последних тестовых выборок источника учитываем в проценте
+SUB_STATS_SAMPLES = 5
+
+
+def _subscription_live_stats(limit: int = SUB_STATS_SAMPLES) -> dict[int, dict]:
+    """[SUB-STATS] Доля живых прокси источника за последние N выборок.
+
+    tested/alive суммируются по выборкам (агрегат, а не среднее процентов) — так
+    один прогон с 3000 конфигов не перевешивается прогоном с 10 конфигами.
+    percent = 100 * alive / tested с точностью до сотых.
+    """
+    out: dict[int, dict] = {}
+    with Session(engine) as stats_session:
+        rows = stats_session.exec(
+            select(SubscriptionTestStat).order_by(SubscriptionTestStat.id.desc())
+        ).all()
+    for r in rows:
+        agg = out.setdefault(r.subscription_id, {"tested": 0, "alive": 0, "samples": 0, "percent": None})
+        if agg["samples"] >= limit:
+            continue
+        agg["tested"] += r.tested
+        agg["alive"] += r.alive
+        agg["samples"] += 1
+    for agg in out.values():
+        agg["percent"] = round(100.0 * agg["alive"] / agg["tested"], 2) if agg["tested"] else None
+    return out
+
+
 @app.get("/subscriptions", response_class=HTMLResponse)
 async def subscriptions_page(request: Request):
     user = get_current_user(request)
@@ -409,6 +438,7 @@ async def subscriptions_page(request: Request):
     return templates.TemplateResponse(request, "subscriptions.html", {
         "user": user,
         "subs": subs,
+        "sub_stats": _subscription_live_stats(),
     })
 
 
@@ -631,6 +661,38 @@ async def regenerate_node_token(request: Request):
             session.add(settings)
             session.commit()
             invalidate_node_token_cache()
+    return RedirectResponse("/settings", status_code=302)
+
+
+@app.post("/settings/regenerate-mcp-read-token")
+async def regenerate_mcp_read_token(request: Request):
+    """Regenerate the read-only MCP token (used by AI agents for read access)."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        if settings:
+            settings.mcp_read_token = secrets.token_urlsafe(32)
+            session.add(settings)
+            session.commit()
+    # TokenAuthMiddleware re-reads the token from settings with a 60s TTL,
+    # so the new value becomes effective within a minute without a restart.
+    return RedirectResponse("/settings", status_code=302)
+
+
+@app.post("/settings/regenerate-mcp-admin-token")
+async def regenerate_mcp_admin_token(request: Request):
+    """Regenerate the admin MCP token (full control over the panel via MCP)."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        if settings:
+            settings.mcp_admin_token = secrets.token_urlsafe(32)
+            session.add(settings)
+            session.commit()
     return RedirectResponse("/settings", status_code=302)
 
 

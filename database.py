@@ -56,6 +56,13 @@ class Subscription(SQLModel, table=True):
     is_enabled: bool = Field(default=True)
     last_config_count: int = Field(default=0)
 
+    # [SUB-AUTOSKIP] Автоотключение тестов источника: 0 живых прокси за последние
+    # SUB_STATS_SAMPLES прогонов. Источник продолжаем опрашивать; если набор
+    # конфигов отличается от того, что был в момент отключения, тесты возобновляем.
+    stats_disabled: bool = Field(default=False)
+    disabled_signature: str = Field(default="")  # подпись набора на момент отключения
+    disabled_at: str = Field(default="")
+
 
 class RawProxy(SQLModel, table=True):
     """Raw proxy URLs fetched from subscriptions, awaiting worker testing."""
@@ -212,6 +219,17 @@ class NodeProxyResult(SQLModel, table=True):
     country_name: str = Field(default="")  # Detected country name in Russian (e.g. "США", "Германия")
 
 
+# [SUB-STATS] Одна выборка по источнику за цикл: сколько его прокси проверено и сколько живо.
+class SubscriptionTestStat(SQLModel, table=True):
+    __tablename__ = "subscription_test_stats"
+    id: int | None = Field(default=None, primary_key=True)
+    subscription_id: int = Field(index=True)
+    generation_id: str = Field(default="", index=True)
+    checked_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    tested: int = Field(default=0)   # уникальных конфигов источника в этом цикле
+    alive: int = Field(default=0)    # из них с успешными тестами (tests_passed > 0)
+
+
 def create_db_and_tables():
     """Create database tables if they don't exist."""
     import os
@@ -266,6 +284,10 @@ def _migrate_db():
         sub_migrations = [
             ("is_enabled", "INTEGER DEFAULT 1"),
             ("last_config_count", "INTEGER DEFAULT 0"),
+            # [SUB-AUTOSKIP]
+            ("stats_disabled", "INTEGER DEFAULT 0"),
+            ("disabled_signature", "TEXT DEFAULT ''"),
+            ("disabled_at", "TEXT DEFAULT ''"),
         ]
         for col_name, col_def in sub_migrations:
             if col_name not in sub_existing:

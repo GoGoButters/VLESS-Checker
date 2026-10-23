@@ -35,6 +35,7 @@
             <tr class="border-b border-slate-700/30">
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'subs_col_url', default='URL') }}</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'subs_col_configs', default='Configs') }}</th>
+                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-40">{{ t(request, 'subs_col_alive', default='Alive, last 5 tests') }}</th>
                 <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-48">{{ t(request, 'subs_col_added', default='Added') }}</th>
                 <th class="px-6 py-4 w-32 text-center">{{ t(request, 'subs_col_status', default='Status') }}</th>
                 <th class="px-6 py-4 w-20"></th>
@@ -55,6 +56,20 @@
                 </td>
                 <td class="px-6 py-4 text-sm text-slate-400">
                     <span class="px-2 py-1 rounded-md bg-slate-800/60">{{ sub.last_config_count }}</span>
+                </td>
+                {# [SUB-STATS] доля живых прокси источника за 5 последних прогонов #}
+                <td class="px-6 py-4 text-sm">
+                    {% set st = (sub_stats or {}).get(sub.id) %}
+                    {% if st and st.percent is not none %}
+                    <span class="px-2 py-1 rounded-md font-semibold {{ 'bg-green-500/15 text-green-400' if st.percent >= 50 else ('bg-amber-500/15 text-amber-400' if st.percent >= 10 else 'bg-rose-500/15 text-rose-400') }}">{{ '%.2f'|format(st.percent) }}%</span>
+                    <div class="text-xs text-slate-500 mt-1">{{ st.alive }} из {{ st.tested }} живых · тестов: {{ st.samples }}</div>
+                    {% else %}
+                    <span class="text-slate-500">—</span>
+                    {% endif %}
+                    {# [SUB-AUTOSKIP] автоотключение тестов источника #}
+                    {% if sub.stats_disabled %}
+                    <div class="text-[10px] font-semibold text-rose-400 mt-1" title="0 живых прокси за 5 последних прогонов; источник опрашивается, тесты вернутся при смене набора конфигов">тесты выключены (0 живых)</div>
+                    {% endif %}
                 </td>
                 <td class="px-6 py-4 text-sm text-slate-400">{{ sub.added_at[:10] }}</td>
                 <td class="px-6 py-4 text-center">

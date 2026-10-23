@@ -4,8 +4,9 @@ from typing import List, Dict, Any, Optional
 import os
 
 from database import (
-    engine, Settings, Node, NodeProxyResult, Subscription, 
-    RatingGroup, TestUrl, ProxyResult, RawProxy, NodeRatingLink
+    engine, Settings, Node, NodeProxyResult, Subscription,
+    RatingGroup, TestUrl, ProxyResult, RawProxy, NodeRatingLink,
+    SubscriptionTestStat,  # [SUB-STATS]
 )
 
 # Initialize MCP servers
@@ -35,9 +36,27 @@ def get_dashboard_stats() -> dict:
 @mcp_ro.tool()
 @mcp_admin.tool()
 def get_subscriptions() -> List[dict]:
-    """Get all subscriptions."""
+    """Get all subscriptions with the share of live proxies over the last 5 test samples."""
     with Session(engine) as session:
-        return [s.model_dump() for s in session.exec(select(Subscription)).all()]
+        subs = [s.model_dump() for s in session.exec(select(Subscription)).all()]
+        stats_rows = session.exec(
+            select(SubscriptionTestStat).order_by(SubscriptionTestStat.id.desc())
+        ).all()  # [SUB-STATS]
+    agg: dict[int, dict] = {}
+    for r in stats_rows:
+        a = agg.setdefault(r.subscription_id, {"tested": 0, "alive": 0, "samples": 0})
+        if a["samples"] >= 5:
+            continue
+        a["tested"] += r.tested
+        a["alive"] += r.alive
+        a["samples"] += 1
+    for s in subs:
+        a = agg.get(s["id"])
+        s["live_percent_5"] = round(100.0 * a["alive"] / a["tested"], 2) if a and a["tested"] else None
+        s["live_alive_5"] = a["alive"] if a else 0
+        s["live_tested_5"] = a["tested"] if a else 0
+        s["test_samples"] = a["samples"] if a else 0
+    return subs
 
 @mcp_ro.tool()
 @mcp_admin.tool()
