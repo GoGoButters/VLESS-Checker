@@ -20,6 +20,7 @@ from database import (
     DATABASE_URL,
     Settings,
     RawProxy,
+    NodeProxyState,  # [NODE-BAN]
     NodeProxyResult,
     engine,
 )
@@ -199,6 +200,40 @@ def _rebuild_raw_proxies(final_proxies: dict[str, tuple[str, int]]) -> int:
     return len(rows)
 
 
+def decay_node_retention() -> None:  # [NODE-BAN]
+    """Раз в цикл: у прокси, которого нода НЕ видела в текущих источниках, съедаем один
+    цикл retention; когда счётчик доходит до нуля — запись снимается с учёта.
+
+    Успешная проверка (main.py, _evaluate_node_bans_sync) ставит retention заново в N,
+    поэтому «проходит на этой ноде» и «держим ещё N циклов» связаны друг с другом.
+    """
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        retention_n = (settings.good_proxy_retention_cycles if settings else 3) or 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = session.exec(
+            select(NodeProxyState).where(NodeProxyState.seen_in_sources == True)
+        ).all()
+        decayed = 0
+        expired = 0
+        for r in rows:
+            if (r.retention_cycles or 0) > 0:
+                r.retention_cycles -= 1
+                decayed += 1
+            banned = bool(r.banned_until and r.banned_until > now_iso)
+            if (r.retention_cycles or 0) <= 0 and not banned:
+                session.delete(r)
+                expired += 1
+            else:
+                r.seen_in_sources = False
+                session.add(r)
+        session.commit()
+        if decayed or expired:
+            logger.info(
+                f"[NODE-BAN] retention нод: уменьшено {decayed}, снято {expired} (лимит {retention_n})"
+            )
+
+
 def _run_cycle_sync() -> None:
     """Run one fetch cycle. Blocking — always called via asyncio.to_thread."""
     global _cycle_running
@@ -222,6 +257,7 @@ def _run_cycle_sync() -> None:
             return
 
         stored = store_raw_proxies(final_proxies)
+        decay_node_retention()  # [NODE-BAN]
         logger.info(f"Scheduler: stored {stored} proxies for workers")
 
         # Update generation_id to signal new cycle to nodes

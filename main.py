@@ -97,6 +97,7 @@ from auth import (
 )
 from subs_manager import fetch_and_parse_subscriptions_sync
 from database import SubscriptionTestStat  # [SUB-STATS]
+from database import NodeProxyState  # [NODE-BAN]
 from scheduler import (
     start_scheduler,
     scheduler_status,
@@ -1072,6 +1073,7 @@ async def delete_node(request: Request, node_id: int):
         node = session.get(Node, node_id)
         if node:
             session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
+            session.exec(delete(NodeProxyState).where(NodeProxyState.node_id == node_id))  # [NODE-BAN] каскад
             session.delete(node)
             session.commit()
     return RedirectResponse("/nodes", status_code=302)
@@ -1234,12 +1236,13 @@ async def node_get_proxies(
     offset: int = Query(default=0),
     limit: int = Query(default=0),
     full: bool = Query(default=False),
+    node_id: int = Query(default=0),  # [NODE-BAN] кто спрашивает
 ):
     """Serve raw fetched proxies to workers for testing with optional pagination and protocol filtering."""
     if not _verify_node_token(authorization):
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    raw_urls, total, chunk_size = await _db(_get_proxies_sync, offset, limit, full)
+    raw_urls, total, chunk_size = await _db(_get_proxies_sync, offset, limit, full, node_id)  # [NODE-BAN]
 
     # In full mode: run_id = md5(generation_id) only (no offset, since chunking is now on worker)
     # In paginated mode: run_id = md5(generation_id:offset) (legacy, kept for existing workers)
@@ -1267,7 +1270,22 @@ async def node_get_proxies(
     return response
 
 
-def _get_proxies_sync(offset: int, limit: int, full: bool):
+def _node_filter_sets(session, node_id: int, now_iso: str):  # [NODE-BAN]
+    """Для ноды: (ключи забаненных ею прокси, список её retention-прокси)."""
+    rows = session.exec(
+        select(NodeProxyState).where(NodeProxyState.node_id == node_id)
+    ).all()
+    banned, retained = set(), []
+    for r in rows:
+        key = r.raw_url.split("#", 1)[0]
+        if r.banned_until and r.banned_until > now_iso:
+            banned.add(key)
+        elif (r.retention_cycles or 0) > 0:
+            retained.append(r.raw_url)
+    return banned, retained
+
+
+def _get_proxies_sync(offset: int, limit: int, full: bool, node_id: int = 0):
     """Load raw proxy URLs. Blocking — call via _db().
 
     Returns (sorted_urls, total, chunk_size). Uses a column projection instead of
@@ -1327,6 +1345,20 @@ def _get_proxies_sync(offset: int, limit: int, full: bool):
         rows = session.exec(query).all()
         raw_urls = sorted([r[0] if isinstance(r, tuple) else r for r in rows])
 
+        # [NODE-BAN] пер-нодовая фильтрация списка для проверки этой нодой:
+        # убираем прокси, забаненные ИМЕННО этой нодой, и добавляем её retention-запас.
+        if node_id:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            banned_keys, retained = _node_filter_sets(session, node_id, now_iso)
+            if banned_keys:
+                raw_urls = [u for u in raw_urls if u.split("#", 1)[0] not in banned_keys]
+            have = {u.split("#", 1)[0] for u in raw_urls}
+            for u in retained:
+                if u.split("#", 1)[0] not in have:
+                    raw_urls.append(u)
+            raw_urls.sort()
+            total = len(raw_urls)
+
         # Snapshot before the session closes (avoid detached-instance access)
         chunk_size = None
         if full and settings:
@@ -1369,6 +1401,7 @@ async def node_post_results(request: Request, background_tasks: BackgroundTasks,
     # Evaluate bans only for the URLs in this chunk (never full-table scan)
     if chunk_urls:
         background_tasks.add_task(_evaluate_bans, chunk_urls)
+        background_tasks.add_task(_evaluate_node_bans, node_id, results)  # [NODE-BAN]
 
     return {"status": "ok", "accepted": outcome["accepted"]}
 
@@ -1476,6 +1509,70 @@ class _BansLocked(Exception):
         super().__init__(str(original))
         self.committed = committed
         self.original = original
+
+
+def _evaluate_node_bans(node_id: int, results: list[dict]) -> None:  # [NODE-BAN]
+    """Пер-нодовая оценка: свой счётчик неудач, свой бан, свой retention.
+
+    Успех (правило владельца) = есть пинг И пройден хотя бы один URL-тест.
+    На успехе счётчик неудач обнуляется, retention ставится заново в N циклов.
+    На неудаче счётчик растёт, и по достижении порога из настроек прокси банится
+    ТОЛЬКО для этой ноды на ban_duration_hours часов.
+    """
+    if not results:
+        return
+    try:
+        _evaluate_node_bans_sync(node_id, results)
+    except Exception as e:
+        logger.error(f"[NODE-BAN] ошибка оценки состояния ноды {node_id}: {e}", exc_info=True)
+
+
+def _evaluate_node_bans_sync(node_id: int, results: list[dict]) -> None:
+    with Session(engine) as session:
+        settings = session.exec(select(Settings)).first()
+        ban_after = (settings.ban_after_n_failures if settings else 3) or 3
+        ban_hours = settings.ban_duration_hours if settings else 168
+        retention_n = settings.good_proxy_retention_cycles if settings else 3
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        ban_until_iso = (now_dt + timedelta(hours=ban_hours)).isoformat() if ban_hours > 0 else None
+
+        banned = 0
+        freed = 0
+        for r in results:
+            raw_url = (r.get("raw_url") or "").strip()
+            if not raw_url:
+                continue
+            passed = int(r.get("ping_ms") or 0) > 0 and int(r.get("tests_passed") or 0) > 0
+            row = session.exec(
+                select(NodeProxyState).where(
+                    NodeProxyState.node_id == node_id,
+                    NodeProxyState.raw_url == raw_url,
+                )
+            ).first()
+            if row is None:
+                row = NodeProxyState(node_id=node_id, raw_url=raw_url)
+            if passed:
+                if row.banned_until:
+                    freed += 1
+                row.consecutive_failures = 0
+                row.banned_until = None
+                row.retention_cycles = retention_n or 0
+                row.last_passed = now_iso
+            else:
+                row.consecutive_failures = (row.consecutive_failures or 0) + 1
+                if ban_until_iso and row.consecutive_failures >= ban_after:
+                    row.banned_until = ban_until_iso
+                    banned += 1
+            row.last_tested = now_iso
+            row.seen_in_sources = True
+            session.add(row)
+        session.commit()
+        if banned or freed:
+            logger.info(
+                f"[NODE-BAN] нода {node_id}: забанено {banned}, разбанено {freed} "
+                f"(порог {ban_after} неудач, бан {ban_hours} ч, retention {retention_n})"
+            )
 
 
 def _evaluate_bans(raw_urls: list[str] | None = None):

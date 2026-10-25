@@ -56,6 +56,13 @@ class Subscription(SQLModel, table=True):
     is_enabled: bool = Field(default=True)
     last_config_count: int = Field(default=0)
 
+    # [SUB-AUTOSKIP] Автоотключение тестов источника: 0 живых прокси за последние
+    # SUB_STATS_SAMPLES прогонов. Источник продолжаем опрашивать; если набор
+    # конфигов отличается от того, что был в момент отключения, тесты возобновляем.
+    stats_disabled: bool = Field(default=False)
+    disabled_signature: str = Field(default="")  # подпись набора на момент отключения
+    disabled_at: str = Field(default="")
+
 
 class RawProxy(SQLModel, table=True):
     """Raw proxy URLs fetched from subscriptions, awaiting worker testing."""
@@ -68,6 +75,27 @@ class RawProxy(SQLModel, table=True):
     consecutive_failures: int = Field(default=0)  # Consecutive check cycles failed on ALL workers
 
     retention_cycles: int = Field(default=0)  # How many cycles this proxy has been retained after disappearing from subscriptions
+
+
+class NodeProxyState(SQLModel, table=True):  # [NODE-BAN]
+    """Пер-нодовая память о прокси: свой счётчик неудач, свой бан, свой retention.
+
+    Пара (нода, прокси) вместо глобальных полей RawProxy: прокси, который стабильно
+    проходит на одной ноде и никогда не проходит на другой, банится только для второй.
+    """
+    __tablename__ = "node_proxy_state"
+    __table_args__ = (
+        UniqueConstraint("node_id", "raw_url", name="uq_node_proxy_state"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    node_id: int = Field(index=True)
+    raw_url: str = Field(index=True)
+    consecutive_failures: int = Field(default=0)
+    banned_until: str | None = Field(default=None, index=True)
+    retention_cycles: int = Field(default=0)
+    last_tested: str | None = Field(default=None)
+    last_passed: str | None = Field(default=None)
+    seen_in_sources: bool = Field(default=True)
 
 
 class TestUrl(SQLModel, table=True):
@@ -277,6 +305,10 @@ def _migrate_db():
         sub_migrations = [
             ("is_enabled", "INTEGER DEFAULT 1"),
             ("last_config_count", "INTEGER DEFAULT 0"),
+            # [SUB-AUTOSKIP]
+            ("stats_disabled", "INTEGER DEFAULT 0"),
+            ("disabled_signature", "TEXT DEFAULT ''"),
+            ("disabled_at", "TEXT DEFAULT ''"),
         ]
         for col_name, col_def in sub_migrations:
             if col_name not in sub_existing:
@@ -309,6 +341,23 @@ def _migrate_db():
 
         if "retention_cycles" not in raw_existing:
             conn.execute("ALTER TABLE raw_proxies ADD COLUMN retention_cycles INTEGER DEFAULT 0")
+
+        # [NODE-BAN] пер-нодовое состояние (бан/retention) — создаётся идемпотентно
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS node_proxy_state ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "node_id INTEGER NOT NULL, "
+            "raw_url TEXT NOT NULL, "
+            "consecutive_failures INTEGER DEFAULT 0, "
+            "banned_until TEXT DEFAULT NULL, "
+            "retention_cycles INTEGER DEFAULT 0, "
+            "last_tested TEXT DEFAULT NULL, "
+            "last_passed TEXT DEFAULT NULL, "
+            "seen_in_sources INTEGER DEFAULT 1)"
+        )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_node_proxy_state ON node_proxy_state(node_id, raw_url)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_nps_node_id ON node_proxy_state(node_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_nps_banned_until ON node_proxy_state(banned_until)")
         
         # Node migrations (new fields for worker-side chunking status tracking)
         cursor = conn.execute("PRAGMA table_info(nodes)")

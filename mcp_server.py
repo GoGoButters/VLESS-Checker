@@ -52,10 +52,7 @@ def get_subscriptions() -> List[dict]:
         a["samples"] += 1
     for s in subs:
         a = agg.get(s["id"])
-        s["live_percent_5"] = round(100.0 * a["alive"] / a["tested"], 2) if a and a["tested"] else None
-        s["live_alive_5"] = a["alive"] if a else 0
-        s["live_tested_5"] = a["tested"] if a else 0
-        s["test_samples"] = a["samples"] if a else 0
+        # [NODE-BAN] колонку «живых за 5 прогонов» убрали из выдачи по решению владельца (25.10)
     return subs
 
 @mcp_ro.tool()
