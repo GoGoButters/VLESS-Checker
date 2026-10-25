@@ -1002,10 +1002,22 @@ async def nodes_page(request: Request):
     with Session(engine) as session:
         nodes = session.exec(select(Node).order_by(Node.id)).all()
         settings = session.exec(select(Settings)).first()
+        # [NODE-BAN] сколько прокси сейчас забанено (banned_until в будущем) для каждой ноды
+        _now_iso = datetime.now(timezone.utc).isoformat()
+        banned_by_node = {
+            int(row[0]): int(row[1])
+            for row in session.exec(
+                select(NodeProxyState.node_id, func.count(NodeProxyState.id))
+                .where(NodeProxyState.banned_until.is_not(None))
+                .where(NodeProxyState.banned_until > _now_iso)
+                .group_by(NodeProxyState.node_id)
+            ).all()
+        }
     return templates.TemplateResponse(request, "nodes.html", {
         "user": user,
         "nodes": nodes,
         "settings": settings,
+        "banned_by_node": banned_by_node,  # [NODE-BAN]
     })
 
 
@@ -1563,6 +1575,7 @@ def _evaluate_node_bans_sync(node_id: int, results: list[dict]) -> None:
                 row.consecutive_failures = (row.consecutive_failures or 0) + 1
                 if ban_until_iso and row.consecutive_failures >= ban_after:
                     row.banned_until = ban_until_iso
+                    row.consecutive_failures = 0  # после бана у прокси снова N попыток
                     banned += 1
             row.last_tested = now_iso
             row.seen_in_sources = True
