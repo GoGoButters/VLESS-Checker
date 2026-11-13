@@ -77,13 +77,15 @@ def next_fetch_at(group: RatingGroup) -> datetime | None:
 
 
 def _due_groups() -> dict[int, bool]:
-    now = _now()
     due: dict[int, bool] = {}
     with Session(engine) as s:
-        for g in s.exec(select(RatingGroup)).all():
-            nxt = next_fetch_at(g)
-            if nxt is not None and nxt <= now:
-                due[g.id] = True
+        groups = s.exec(select(RatingGroup)).all()
+    for g in groups:
+        nxt = next_fetch_at(g)
+        # compare with a "now" taken after next_fetch_at: for a never-fetched
+        # group it returns its own current time
+        if nxt is not None and nxt <= _now():
+            due[g.id] = True
     return due
 
 

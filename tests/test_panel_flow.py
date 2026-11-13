@@ -233,6 +233,35 @@ def test_full_flow(panel):
     assert anon.get("/api/fetch-status").status_code == 401
     assert anon.get("/ratings", follow_redirects=False).status_code == 302
 
+    # the schedule itself (not a manual request) starts never-fetched and overdue groups
+    import pipeline
+    from datetime import datetime, timedelta, timezone
+    with Session(database.engine) as s:
+        g = s.get(database.RatingGroup, a.id)
+        g.schedule_interval_minutes, g.last_fetch_at = 60, ""
+        s.add(g)
+        s.commit()
+    assert a.id in pipeline._due_groups()
+    with Session(database.engine) as s:
+        g = s.get(database.RatingGroup, a.id)
+        g.last_fetch_at = (datetime.now(timezone.utc) - timedelta(minutes=61)).isoformat()
+        s.add(g)
+        s.commit()
+    assert a.id in pipeline._due_groups()
+    with Session(database.engine) as s:
+        g = s.get(database.RatingGroup, a.id)
+        g.last_fetch_at = datetime.now(timezone.utc).isoformat()
+        s.add(g)
+        s.commit()
+    assert a.id not in pipeline._due_groups()
+    gen_before = _groups()["A"].generation_id
+    with Session(database.engine) as s:
+        g = s.get(database.RatingGroup, a.id)
+        g.last_fetch_at = ""
+        s.add(g)
+        s.commit()
+    assert _wait(lambda: _groups()["A"].generation_id != gen_before)  # picked up by the loop on its own
+
     # group deletion cascades
     c.post(f"/ratings/delete/{b.id}", follow_redirects=False)
     with Session(database.engine) as s:
