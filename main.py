@@ -1284,16 +1284,24 @@ async def node_get_proxies(
 
 def _node_filter_sets(session, node_id: int, now_iso: str):  # [NODE-BAN]
     """Для ноды: (ключи забаненных ею прокси, список её retention-прокси)."""
-    rows = session.exec(
-        select(NodeProxyState).where(NodeProxyState.node_id == node_id)
-    ).all()
-    banned, retained = set(), []
-    for r in rows:
-        key = r.raw_url.split("#", 1)[0]
-        if r.banned_until and r.banned_until > now_iso:
-            banned.add(key)
-        elif (r.retention_cycles or 0) > 0:
-            retained.append(r.raw_url)
+    # Filter in SQL and project only raw_url: the table holds ~340k rows per
+    # node, and loading them as ORM objects for two nodes at once OOM-killed
+    # the panel (768 MB limit) in a restart loop.
+    is_banned = (NodeProxyState.banned_until.is_not(None)) & (NodeProxyState.banned_until > now_iso)
+    banned = {
+        u.split("#", 1)[0]
+        for u in session.exec(
+            select(NodeProxyState.raw_url)
+            .where(NodeProxyState.node_id == node_id)
+            .where(is_banned)
+        ).all()
+    }
+    retained = list(session.exec(
+        select(NodeProxyState.raw_url)
+        .where(NodeProxyState.node_id == node_id)
+        .where(NodeProxyState.retention_cycles > 0)
+        .where(~is_banned)
+    ).all())
     return banned, retained
 
 

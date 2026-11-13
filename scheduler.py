@@ -14,6 +14,7 @@ import threading
 import uuid
 from datetime import datetime, timezone, timedelta
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from database import (
@@ -207,34 +208,28 @@ def decay_node_retention() -> None:  # [NODE-BAN]
     Успешная проверка (main.py, _evaluate_node_bans_sync) ставит retention заново в N,
     поэтому «проходит на этой ноде» и «держим ещё N циклов» связаны друг с другом.
     """
+    # Два SQL-запроса вместо загрузки всей таблицы ORM-объектами (~700k строк
+    # не помещались в лимит памяти контейнера). Логика прежняя:
+    #   активный бан — запись не трогаем;
+    #   retention > 0 — уменьшаем на 1;
+    #   иначе неудачи > 0 — держим (копим до порога бана);
+    #   иначе — запись не нужна, удаляем.
+    # DELETE идёт первым, чтобы решение принималось по состоянию до уменьшения.
     with Session(engine) as session:
         settings = session.exec(select(Settings)).first()
         retention_n = (settings.good_proxy_retention_cycles if settings else 3) or 0
         now_iso = datetime.now(timezone.utc).isoformat()
-        rows = session.exec(
-            select(NodeProxyState).where(NodeProxyState.seen_in_sources == True)
-        ).all()
-        decayed = 0
-        expired = 0
-        for r in rows:
-            banned = bool(r.banned_until and r.banned_until > now_iso)
-            if banned:
-                # активный бан: держим запись, счётчик уже обнулён в момент бана
-                session.add(r)
-                continue
-            if (r.retention_cycles or 0) > 0:
-                # прокси проходил проверку на этой ноде: держим ещё столько циклов
-                r.retention_cycles -= 1
-                decayed += 1
-                session.add(r)
-                continue
-            if (r.consecutive_failures or 0) > 0:
-                # копим неудачи подряд — запись нужна, чтобы дойти до порога бана
-                session.add(r)
-                continue
-            # запись чистая и не нужна: прокси не проходил, не банился, retention исчерпан
-            session.delete(r)
-            expired += 1
+        not_banned = "NOT (banned_until IS NOT NULL AND banned_until > :now)"
+        expired = session.exec(text(
+            "DELETE FROM node_proxy_state WHERE seen_in_sources = 1 "
+            f"AND {not_banned} "
+            "AND COALESCE(retention_cycles, 0) <= 0 "
+            "AND COALESCE(consecutive_failures, 0) <= 0"
+        ).bindparams(now=now_iso)).rowcount or 0
+        decayed = session.exec(text(
+            "UPDATE node_proxy_state SET retention_cycles = retention_cycles - 1 "
+            f"WHERE seen_in_sources = 1 AND {not_banned} AND retention_cycles > 0"
+        ).bindparams(now=now_iso)).rowcount or 0
         session.commit()
         if decayed or expired:
             logger.info(
