@@ -24,6 +24,7 @@ cd "${PROJECT_ROOT}/node"
 
 export PYTHONUNBUFFERED=1
 export SINGBOX_PATH="${SINGBOX_PATH:-/usr/local/bin/sing-box}"
+export XRAY_PATH="${XRAY_PATH:-/usr/local/bin/xray}"
 
 echo "=== Starting VPN Checker Worker Node ==="
 echo "Master URL: ${MASTER_URL:-http://127.0.0.1:8000}"

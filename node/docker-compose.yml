@@ -8,6 +8,7 @@ services:
     # MASTER_URL, NODE_TOKEN, NODE_NAME, NODE_REGION, checker overrides.
     container_name: ${NODE_CONTAINER_NAME:-checker-node}
     restart: unless-stopped
+    init: true  # reaps engine processes even if the worker dies abruptly
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1

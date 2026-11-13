@@ -1,40 +1,22 @@
-"""Geo checker — detects proxy country via GeoIP APIs through the proxy itself.
-
-Uses multiple free GeoIP APIs with fallback, and maps country codes to Russian names.
-Designed to be called from worker nodes after speed testing.
-"""
+"""Proxy country via GeoIP APIs queried through the proxy itself (worker nodes)."""
+from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import socket
-import tempfile
 
 import httpx
 
-from proxy_parsers import parse_proxy_url
 from engine_driver import start_engine
+from proxy_parsers import parse_proxy_url
 
 logger = logging.getLogger("vpn_checker.geo_checker")
 
-SINGBOX_PATH = os.environ.get("SINGBOX_PATH", "/usr/local/bin/sing-box")
-
-# GeoIP API endpoints (free, no auth required)
-# Each returns JSON with country info accessible via different keys
+# Free GeoIP APIs, tried in order: (url, JSON key with the ISO country code)
 GEOIP_APIS = [
-    {
-        "url": "http://ip-api.com/json/?fields=countryCode",
-        "key": "countryCode",
-    },
-    {
-        "url": "https://ipapi.co/json/",
-        "key": "country_code",
-    },
-    {
-        "url": "https://ipinfo.io/json",
-        "key": "country",
-    },
+    ("http://ip-api.com/json/?fields=countryCode", "countryCode"),
+    ("https://ipapi.co/json/", "country_code"),
+    ("https://ipinfo.io/json", "country"),
 ]
 
 # ISO 3166-1 alpha-2 country code → Russian country name
@@ -270,91 +252,39 @@ COUNTRY_NAMES_RU = {
 }
 
 
-def _get_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _build_singbox_config(outbound: dict, socks_port: int) -> dict:
-    bind_interface = os.environ.get("BIND_INTERFACE", "")
-    if bind_interface:
-        outbound["bind_interface"] = bind_interface
-    return {
-        "log": {"disabled": True, "level": "error"},
-        "inbounds": [
-            {
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "listen_port": socks_port
-            }
-        ],
-        "outbounds": [
-            outbound
-        ]
-    }
-
-
 def get_country_name_ru(country_code: str) -> str:
-    """Convert ISO 3166-1 alpha-2 country code to Russian name.
-    Returns the code itself if no mapping found."""
-    if not country_code:
-        return ""
-    code = country_code.upper().strip()
+    """ISO code → Russian name (the code itself when unknown)."""
+    code = (country_code or "").upper().strip()
     return COUNTRY_NAMES_RU.get(code, code)
 
 
-async def detect_proxy_country(
-    proxy_url: str,
-    timeout_s: int = 10,
-    singbox_path: str = SINGBOX_PATH,
-) -> str:
-    """Detect the country of a proxy by making a GeoIP API call through it.
-    
-    Returns the country name in Russian (e.g. "США", "Германия"),
-    or empty string if detection fails.
-    """
-    parsed_outbound = parse_proxy_url(proxy_url)
-    if not parsed_outbound:
-        return ""
+async def _lookup(proxy: str, timeout_s: float) -> str:
+    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=False,
+                                 follow_redirects=True) as client:
+        for url, key in GEOIP_APIS:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    code = str(resp.json().get(key) or "")
+                    if len(code) == 2:
+                        return get_country_name_ru(code)
+            except (httpx.HTTPError, OSError, ValueError):
+                continue
+    return ""
 
-    socks_port = _get_free_port()
-    handle = await start_engine(parsed_outbound, socks_port,
-                                wait_s=float(os.environ.get("ENGINE_START_WAIT_S", "4")))
+
+async def detect_proxy_country(proxy_url: str, timeout_s: float = 10) -> str:
+    """Russian country name of the proxy exit, or "" when undetectable."""
+    outbound = parse_proxy_url(proxy_url)
+    if not outbound:
+        return ""
+    handle = await start_engine(outbound, wait_s=float(os.environ.get("ENGINE_START_WAIT_S", "4")))
     if handle is None:
         return ""
-
     try:
-        local_proxy = f"socks5://127.0.0.1:{socks_port}"
-
-        try:
-            async with httpx.AsyncClient(
-                proxy=local_proxy,
-                timeout=httpx.Timeout(float(timeout_s)),
-                verify=False,
-                follow_redirects=True,
-            ) as client:
-                # Try each GeoIP API until one works
-                for api in GEOIP_APIS:
-                    try:
-                        resp = await client.get(api["url"])
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            country_code = data.get(api["key"], "")
-                            if country_code and len(country_code) == 2:
-                                country_ru = get_country_name_ru(country_code)
-                                logger.debug(
-                                    f"Geo detected: {country_code} → {country_ru} "
-                                    f"(via {api['url']})"
-                                )
-                                return country_ru
-                    except Exception as e:
-                        logger.debug(f"GeoIP API {api['url']} failed: {e}")
-                        continue
-        except Exception as e:
-            logger.debug(f"GeoIP proxy connection failed: {e}")
-            return ""
-
+        return await asyncio.wait_for(_lookup(f"socks5://127.0.0.1:{handle.socks_port}", timeout_s),
+                                      timeout=len(GEOIP_APIS) * timeout_s + 5)
+    except asyncio.TimeoutError:
+        return ""
     finally:
         await handle.stop()
