@@ -28,8 +28,10 @@ engine = create_engine(
     DATABASE_URL,
     echo=False,
     connect_args={"check_same_thread": False, "timeout": 30.0},
-    pool_size=10,
-    max_overflow=30,
+    # Every connection keeps its own page cache (cache_size below): 20 x 4 MB
+    # stays well inside the container limit even under a burst of requests.
+    pool_size=5,
+    max_overflow=15,
     pool_pre_ping=True,
     pool_recycle=1800,
     pool_timeout=60,
@@ -43,8 +45,8 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA wal_autocheckpoint=1000")
     cursor.execute("PRAGMA journal_size_limit=67108864")  # 64MB max WAL size
-    # The page cache is charged to the container cgroup: keep it bounded.
-    cursor.execute("PRAGMA cache_size=-16000")  # 16MB
+    # The page cache is per connection and charged to the container cgroup.
+    cursor.execute("PRAGMA cache_size=-4000")  # 4MB
     cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()

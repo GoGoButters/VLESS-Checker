@@ -13,15 +13,16 @@ never blocks the event loop.
 """
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import logging
+import threading
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlmodel import select
 
@@ -115,29 +116,54 @@ def _job(group: RatingGroup, st: NodeGroupState) -> dict:
     }
 
 
-def _remaining(s: Session, gid: int, nid: int, gen: str) -> list[str]:
-    """Pool minus the node's active bans and what it already tested in `gen`,
-    plus its own retained proxies that left the pool."""
-    now = utcnow()
-    rows = s.exec(text(
-        "SELECT p.raw_url FROM group_proxies p WHERE p.group_id = :g AND NOT EXISTS ("
-        " SELECT 1 FROM group_node_proxies s WHERE s.group_id = :g AND s.node_id = :n AND s.key = p.key"
-        " AND ((s.banned_until IS NOT NULL AND s.banned_until > :now) OR s.generation_id = :gen)) "
-        "UNION ALL "
-        "SELECT s.raw_url FROM group_node_proxies s WHERE s.group_id = :g AND s.node_id = :n"
-        " AND s.retention_cycles > 0 AND s.generation_id != :gen"
-        " AND NOT (s.banned_until IS NOT NULL AND s.banned_until > :now)"
-        " AND NOT EXISTS (SELECT 1 FROM group_proxies p WHERE p.group_id = :g AND p.key = s.key)"
-    ).bindparams(g=gid, n=nid, now=now, gen=gen)).all()
-    return [r[0] for r in rows]
+# Pool minus the node's active bans and what it already tested in `gen`, plus
+# its own retained proxies that left the pool.
+_REMAINING_SQL = (
+    "SELECT p.raw_url FROM group_proxies p WHERE p.group_id = :g AND NOT EXISTS ("
+    " SELECT 1 FROM group_node_proxies s WHERE s.group_id = :g AND s.node_id = :n AND s.key = p.key"
+    " AND ((s.banned_until IS NOT NULL AND s.banned_until > :now) OR s.generation_id = :gen)) "
+    "UNION ALL "
+    "SELECT s.raw_url FROM group_node_proxies s WHERE s.group_id = :g AND s.node_id = :n"
+    " AND s.retention_cycles > 0 AND s.generation_id != :gen"
+    " AND NOT (s.banned_until IS NOT NULL AND s.banned_until > :now)"
+    " AND NOT EXISTS (SELECT 1 FROM group_proxies p WHERE p.group_id = :g AND p.key = s.key)"
+)
+# At most this many proxy lists are streamed at once (each holds a read cursor).
+_list_slots = threading.BoundedSemaphore(2)
 
 
-def _json_response(request: Request, payload: dict) -> Response:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-    if len(body) > 4096 and "gzip" in request.headers.get("accept-encoding", ""):
-        return Response(gzip.compress(body, 5), media_type="application/json",
-                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
-    return Response(body, media_type="application/json")
+def _has_remaining(s: Session, gid: int, nid: int, gen: str) -> bool:
+    return s.exec(text(f"SELECT 1 FROM ({_REMAINING_SQL}) LIMIT 1")
+                  .bindparams(g=gid, n=nid, now=utcnow(), gen=gen)).first() is not None
+
+
+def _stream_list(request: Request, head: dict, count_key: str, gid: int, nid: int, gen: str) -> StreamingResponse:
+    """JSON object whose "proxies" array is streamed from a DB cursor (gzip on
+    the fly): memory stays O(batch) instead of ~25 MB per 50k-link list."""
+    gz = "gzip" in request.headers.get("accept-encoding", "")
+    prefix = json.dumps(head, ensure_ascii=False, separators=(",", ":"))[:-1] + ',"proxies":['
+
+    def body():
+        comp = zlib.compressobj(5, zlib.DEFLATED, 31) if gz else None
+        out = (lambda b: comp.compress(b)) if comp else (lambda b: b)
+        with _list_slots, engine.connect() as c:
+            yield out(prefix.encode())
+            res = c.execute(text(_REMAINING_SQL), {"g": gid, "n": nid, "now": utcnow(), "gen": gen})
+            n = 0
+            while rows := res.fetchmany(2000):
+                parts = []
+                for (url,) in rows:
+                    parts.append(("," if n else "") + json.dumps(url, ensure_ascii=False))
+                    n += 1
+                chunk = out("".join(parts).encode())
+                if chunk:
+                    yield chunk
+            yield out(f'],"{count_key}":{n}}}'.encode())
+        if comp:
+            yield comp.flush()
+
+    headers = {"Content-Encoding": "gzip", "Vary": "Accept-Encoding"} if gz else {}
+    return StreamingResponse(body(), media_type="application/json", headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -341,14 +367,16 @@ def node_group_proxies(request: Request, gid: int, node_id: int = Query(...), au
         group = _group_for_node(s, gid, node_id)
         st = _state(s, gid, node_id)
         gen = effective_generation(group.generation_id, st.run_seq)
-        proxies = _remaining(s, gid, node_id, gen) if gen else []
-        if gen and not proxies and st.completed_generation != gen:
+        has_work = bool(gen) and _has_remaining(s, gid, node_id, gen)
+        if gen and not has_work and st.completed_generation != gen:
             st.status, st.completed_generation, st.completed_at = "idle", gen, utcnow()
             s.add(st)
         s.commit()
         pool_total = group.pool_size
-    return _json_response(request, {"generation": gen, "proxies": proxies, "remaining": len(proxies),
-                                    "pool_total": pool_total})
+    head = {"generation": gen, "pool_total": pool_total}
+    if not has_work:
+        return {**head, "proxies": [], "remaining": 0}
+    return _stream_list(request, head, "remaining", gid, node_id, gen)
 
 
 @router.post("/api/node/groups/{gid}/results")
@@ -427,15 +455,15 @@ def legacy_proxies(request: Request, node_id: int = Query(default=0), authorizat
     _auth(authorization)
     with Session(engine) as s:
         group, st = _legacy_group(s, node_id) if node_id else (None, None)
-        proxies, chunk = [], 0
-        if group:
-            gen = effective_generation(group.generation_id, st.run_seq)
-            proxies = sorted(_remaining(s, group.id, node_id, gen))
-            chunk = group.chunk_size
+        gen = effective_generation(group.generation_id, st.run_seq) if group else ""
+        has_work = bool(gen) and _has_remaining(s, group.id, node_id, gen)
         s.commit()
-    run_id = hashlib.md5(json.dumps(proxies[:1]).encode()).hexdigest() if proxies else "empty"
-    return _json_response(request, {"run_id": run_id, "proxies": proxies, "offset": 0, "total": len(proxies),
-                                    "has_more": False, "chunk_size": chunk})
+    if not has_work:
+        return {"run_id": "empty", "proxies": [], "offset": 0, "total": 0, "has_more": False,
+                "chunk_size": group.chunk_size if group else 0}
+    head = {"run_id": hashlib.md5(gen.encode()).hexdigest(), "offset": 0, "has_more": False,
+            "chunk_size": group.chunk_size}
+    return _stream_list(request, head, "total", group.id, node_id, gen)
 
 
 @router.post("/api/node/results")
