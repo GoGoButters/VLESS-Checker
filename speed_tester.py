@@ -30,10 +30,14 @@ UL_PAYLOAD_SIZE = 2 * 1024 * 1024
 _UL_PAYLOAD = os.urandom(UL_PAYLOAD_SIZE)
 
 
+# The URL that worked last time is tried first (dead CDNs cost a probe timeout each).
+_last_good_url: str | None = None
+
+
 async def _probe(client: httpx.AsyncClient, url: str) -> bool:
     """Small ranged GET (many file servers mishandle HEAD)."""
     try:
-        resp = await client.get(url, headers={"Range": "bytes=0-1023"}, timeout=httpx.Timeout(10.0))
+        resp = await client.get(url, headers={"Range": "bytes=0-1023"}, timeout=httpx.Timeout(5.0))
         return resp.status_code in (200, 206)
     except (httpx.HTTPError, OSError):
         return False
@@ -54,13 +58,15 @@ async def _download_stream(client: httpx.AsyncClient, url: str, counter: list, s
 
 async def measure_download(proxy: str, timeout_s: float, extra_urls: list[str] | None = None) -> int:
     """KB/s over parallel streams, 0 on failure."""
+    global _last_good_url
+    candidates = list(dict.fromkeys(([_last_good_url] if _last_good_url else []) + list(extra_urls or []) + DL_TEST_URLS))
     async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=False,
                                  follow_redirects=True,
                                  limits=httpx.Limits(max_connections=DL_PARALLEL_STREAMS + 2)) as client:
         url = None
-        for candidate in list(extra_urls or []) + DL_TEST_URLS:
+        for candidate in candidates:
             if await _probe(client, candidate):
-                url = candidate
+                url = _last_good_url = candidate
                 break
         if not url:
             return 0

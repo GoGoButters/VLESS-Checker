@@ -32,6 +32,7 @@ LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40, "off": 999}
 PRIORITY_MARKERS = ("type=xhttp", "type=splithttp", "type=httpupgrade")
 RESULT_POST_ATTEMPTS = 8
 POST_BATCH = 2000  # the panel accepts up to 5000 results per request
+SPEED_PARALLEL = int(os.environ.get("SPEED_TEST_PARALLEL", "4"))
 
 
 class RemoteLogHandler(logging.Handler):
@@ -68,6 +69,20 @@ class RemoteLogHandler(logging.Handler):
 remote_logs = RemoteLogHandler()
 for name in ("vpn_checker_node", "vpn_checker"):
     logging.getLogger(name).addHandler(remote_logs)
+
+
+def _public_host(url: str) -> bool:
+    """A panel on a private/LAN address is unreachable through remote proxies:
+    probing it as a speed-test target would only waste a timeout per proxy."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or ""
+    try:
+        addr = ipaddress.ip_address(socket.gethostbyname(host))
+    except (OSError, ValueError):
+        return False
+    return addr.is_global
 
 
 def sort_by_priority(urls: list[str]) -> list[str]:
@@ -206,7 +221,7 @@ class Worker:
 
             top_n = job.get("speed_test_top_n") or 0
             if top_n and passing:
-                sem = asyncio.Semaphore(2)
+                sem = asyncio.Semaphore(SPEED_PARALLEL)
 
                 async def speed(r: dict):
                     async with sem:
@@ -215,9 +230,11 @@ class Worker:
                     if m:
                         r["download_speed_kbps"], r["upload_speed_kbps"] = m
                 ranked = sorted(passing, key=lambda r: (-r["tests_passed"], r["ping_ms"]))[:top_n]
+                logger.info(f"[{job['name']}] chunk {i}: speed test of {len(ranked)} proxies")
                 await asyncio.gather(*(speed(r) for r in ranked))
 
             if job.get("geo_check_enabled") and passing:
+                logger.info(f"[{job['name']}] chunk {i}: country lookup of {len(passing)} proxies")
                 sem = asyncio.Semaphore(3)
 
                 async def geo(r: dict):
@@ -244,7 +261,8 @@ class Worker:
                 jobs = await self._call("GET", "/api/node/jobs", params={"node_id": self.node_id})
                 remote_logs.min_level = LEVELS.get(jobs.get("node_log_level", "info"), 20)
                 due = [j for j in jobs.get("jobs", []) if j.get("due")]
-                speed_url = f"{self.master}{jobs['speed_test_dl_url']}" if jobs.get("speed_test_dl_url") else ""
+                speed_url = (f"{self.master}{jobs['speed_test_dl_url']}"
+                             if jobs.get("speed_test_dl_url") and _public_host(self.master) else "")
                 if not jobs.get("jobs"):
                     logger.info("No rating group assigned — idle")
                 for job in due:
