@@ -134,7 +134,7 @@ class Worker:
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 logger.warning(f"Register failed: {e!r}")
             await asyncio.sleep(delay)
-            delay = min(delay * 2, config.poll_interval_s)
+            delay = min(delay * 2, 15)  # the panel frees the name 90 s after the last heartbeat
 
     async def post_results(self, gid: int, generation: str, results: list[dict]) -> None:
         """Deliver one chunk; retries transient failures, aborts the run when stale."""
