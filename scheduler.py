@@ -217,16 +217,24 @@ def decay_node_retention() -> None:  # [NODE-BAN]
         decayed = 0
         expired = 0
         for r in rows:
+            banned = bool(r.banned_until and r.banned_until > now_iso)
+            if banned:
+                # активный бан: держим запись, счётчик уже обнулён в момент бана
+                session.add(r)
+                continue
             if (r.retention_cycles or 0) > 0:
+                # прокси проходил проверку на этой ноде: держим ещё столько циклов
                 r.retention_cycles -= 1
                 decayed += 1
-            banned = bool(r.banned_until and r.banned_until > now_iso)
-            if (r.retention_cycles or 0) <= 0 and not banned:
-                session.delete(r)
-                expired += 1
-            else:
-                r.seen_in_sources = False
                 session.add(r)
+                continue
+            if (r.consecutive_failures or 0) > 0:
+                # копим неудачи подряд — запись нужна, чтобы дойти до порога бана
+                session.add(r)
+                continue
+            # запись чистая и не нужна: прокси не проходил, не банился, retention исчерпан
+            session.delete(r)
+            expired += 1
         session.commit()
         if decayed or expired:
             logger.info(

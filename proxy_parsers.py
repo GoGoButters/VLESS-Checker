@@ -2,6 +2,83 @@ import json
 import base64
 from urllib.parse import urlparse, parse_qs, unquote
 
+def _transport_from_params(net: str, qs: dict, default_host: str = "") -> dict | None:
+    """Транспорт из параметров ссылки (нотация sing-box/Xray-ссылок).
+
+    Поддержано: tcp/raw (транспорта нет), ws, grpc, httpupgrade,
+    xhttp/splithttp, http/h2. Транспорты, которых нет в sing-box
+    (xhttp/splithttp), проверяются движком Xray — см. engine_driver.needs_xray().
+    """
+    net = (net or "tcp").lower()
+    if net in ("", "tcp", "raw"):
+        return None
+
+    path = qs.get("path", [""])[0] or ""
+    host = qs.get("host", [""])[0] or ""
+
+    if net == "ws":
+        transport = {"type": "ws", "path": path or "/"}
+        h = host or (qs.get("sni", [""])[0] if "sni" in qs else default_host)
+        if h:
+            transport["headers"] = {"Host": h}
+        if qs.get("ed", [""])[0] and qs.get("eh", [""])[0]:
+            transport["early_data_header_name"] = qs["eh"][0]
+            try:
+                transport["max_early_data"] = int(qs["ed"][0])
+            except ValueError:
+                pass
+        return transport
+
+    if net == "grpc":
+        transport = {
+            "type": "grpc",
+            "service_name": qs.get("serviceName", [""])[0] or qs.get("path", [""])[0].lstrip("/"),
+        }
+        if qs.get("authority", [""])[0]:
+            transport["authority"] = qs["authority"][0]
+        if qs.get("mode", [""])[0] == "multi":
+            transport["multi_mode"] = True
+        return transport
+
+    if net in ("xhttp", "splithttp"):
+        transport = {"type": "xhttp"}
+        if path:
+            transport["path"] = path
+        if host:
+            transport["host"] = host
+        if qs.get("mode", [""])[0]:
+            transport["mode"] = qs["mode"][0]
+        extra_raw = qs.get("extra", [""])[0]
+        if extra_raw:
+            # В ссылках extra приходит строкой; Xray ждёт JSON-объект.
+            try:
+                extra_obj = json.loads(extra_raw)
+            except Exception:
+                extra_obj = None
+            if isinstance(extra_obj, dict) and extra_obj:
+                transport["extra"] = extra_obj
+        return transport
+
+    if net == "httpupgrade":
+        transport = {"type": "httpupgrade"}
+        if path:
+            transport["path"] = path
+        if host:
+            transport["host"] = host
+        return transport
+
+    if net in ("h2", "http"):
+        transport = {"type": "http"}
+        if path:
+            transport["path"] = path
+        if host:
+            transport["host"] = [h.strip() for h in host.split(",") if h.strip()]
+        return transport
+
+    # Неизвестный транспорт — отдаём как есть (Xray его попробует).
+    return {"type": net}
+
+
 def _decode_base64_padding(data: str) -> bytes:
     """Pad base64 string to a multiple of 4 before decoding."""
     data = data.strip()
@@ -83,22 +160,11 @@ def _parse_vless(url: str) -> dict | None:
     if flow:
         outbound["flow"] = flow
     
-    # Transport (ws, grpc)
-    net = qs.get("type", ["tcp"])[0]
-    if net == "ws":
-        outbound["transport"] = {
-            "type": "ws",
-            "path": qs.get("path", ["/"])[0],
-            "headers": {
-                "Host": qs.get("host", [""])[0] or (qs.get("sni", [""])[0] if "sni" in qs else parsed.hostname)
-            }
-        }
-    elif net == "grpc":
-        outbound["transport"] = {
-            "type": "grpc",
-            "service_name": qs.get("serviceName", [""])[0]
-        }
-        
+    # Transport (ws, grpc, xhttp, httpupgrade, http)
+    transport = _transport_from_params(qs.get("type", ["tcp"])[0], qs, default_host=parsed.hostname)
+    if transport:
+        outbound["transport"] = transport
+
     return outbound
 
 def _parse_vmess(url: str) -> dict | None:
@@ -138,19 +204,17 @@ def _parse_vmess(url: str) -> dict | None:
         if alpn:
             outbound["tls"]["alpn"] = str(alpn).split(",")
             
-    net = v.get("net", "tcp")
-    if net == "ws":
-        outbound["transport"] = {
-            "type": "ws",
-            "path": v.get("path", "/"),
-            "headers": {"Host": v.get("host", v.get("add"))}
-        }
-    elif net == "grpc":
-        outbound["transport"] = {
-            "type": "grpc",
-            "service_name": v.get("path", "")
-        }
-        
+    # Transport (ws, grpc, xhttp, httpupgrade, http)
+    vmess_qs = {
+        "type": [str(v.get("net") or "tcp")],
+        "path": [str(v.get("path") or "")],
+        "host": [str(v.get("host") or "")],
+        "serviceName": [str(v.get("path") or "")],
+    }
+    transport = _transport_from_params(v.get("net") or "tcp", vmess_qs, default_host=str(v.get("add") or ""))
+    if transport:
+        outbound["transport"] = transport
+
     return outbound
 
 def _parse_trojan(url: str) -> dict | None:
@@ -187,19 +251,11 @@ def _parse_trojan(url: str) -> dict | None:
         if alpn:
             outbound["tls"]["alpn"] = alpn.split(",")
         
-    net = qs.get("type", ["tcp"])[0]
-    if net == "ws":
-        outbound["transport"] = {
-            "type": "ws",
-            "path": qs.get("path", ["/"])[0],
-            "headers": {"Host": qs.get("host", [""])[0] or parsed.hostname}
-        }
-    elif net == "grpc":
-        outbound["transport"] = {
-            "type": "grpc",
-            "service_name": qs.get("serviceName", [""])[0]
-        }
-        
+    # Transport (ws, grpc, xhttp, httpupgrade, http)
+    transport = _transport_from_params(qs.get("type", ["tcp"])[0], qs, default_host=parsed.hostname)
+    if transport:
+        outbound["transport"] = transport
+
     return outbound
 
 def _parse_shadowsocks(url: str) -> dict | None:
