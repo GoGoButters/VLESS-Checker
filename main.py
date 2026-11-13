@@ -176,6 +176,13 @@ class TokenAuthMiddleware:
             await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"text/plain")]})
             await send({"type": "http.response.body", "body": b"Unauthorized"})
             return
+        if scope["type"] == "http" and scope.get("method") == "HEAD":
+            # Clients probe the SSE endpoint with HEAD; fastmcp's SSE transport
+            # then tries to answer twice ("response already completed").
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"text/event-stream")]})
+            await send({"type": "http.response.body", "body": b""})
+            return
         return await self.asgi_app(scope, receive, send)
 
 
