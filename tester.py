@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from engine_driver import start_engine
+from engine_driver import ssl_context, start_engine
 from proxy_parsers import parse_proxy_url
 
 logger = logging.getLogger("vpn_checker.tester")
@@ -116,6 +116,7 @@ async def run_test_urls(socks_port: int, test_urls: list[dict], http_timeout_s: 
     async with httpx.AsyncClient(
         proxy=f"socks5://127.0.0.1:{socks_port}",
         timeout=httpx.Timeout(http_timeout_s),
+        verify=ssl_context(True),
         follow_redirects=True,
         limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
     ) as client:

@@ -36,6 +36,7 @@ COPY node/main.py node/config.py /app/node/
 
 WORKDIR /app/node
 ENV PYTHONUNBUFFERED=1 \
+    MALLOC_ARENA_MAX=2 \
     SINGBOX_PATH=/usr/local/bin/sing-box \
     XRAY_PATH=/usr/local/bin/xray
 

@@ -8,7 +8,7 @@ import time
 
 import httpx
 
-from engine_driver import start_engine
+from engine_driver import ssl_context, start_engine
 from proxy_parsers import parse_proxy_url
 
 logger = logging.getLogger("vpn_checker.speed_tester")
@@ -60,7 +60,7 @@ async def measure_download(proxy: str, timeout_s: float, extra_urls: list[str] |
     """KB/s over parallel streams, 0 on failure."""
     global _last_good_url
     candidates = list(dict.fromkeys(([_last_good_url] if _last_good_url else []) + list(extra_urls or []) + DL_TEST_URLS))
-    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=False,
+    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=ssl_context(False),
                                  follow_redirects=True,
                                  limits=httpx.Limits(max_connections=DL_PARALLEL_STREAMS + 2)) as client:
         url = None
@@ -83,7 +83,7 @@ async def measure_download(proxy: str, timeout_s: float, extra_urls: list[str] |
 
 async def measure_upload(proxy: str, timeout_s: float) -> int:
     """KB/s for a 2 MB POST, 0 on failure."""
-    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=False,
+    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=ssl_context(False),
                                  follow_redirects=True) as client:
         for url in UL_TEST_URLS:
             try:

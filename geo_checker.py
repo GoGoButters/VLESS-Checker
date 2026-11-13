@@ -7,7 +7,7 @@ import os
 
 import httpx
 
-from engine_driver import start_engine
+from engine_driver import ssl_context, start_engine
 from proxy_parsers import parse_proxy_url
 
 logger = logging.getLogger("vpn_checker.geo_checker")
@@ -259,7 +259,7 @@ def get_country_name_ru(country_code: str) -> str:
 
 
 async def _lookup(proxy: str, timeout_s: float) -> str:
-    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=False,
+    async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(timeout_s), verify=ssl_context(False),
                                  follow_redirects=True) as client:
         for url, key in GEOIP_APIS:
             try:

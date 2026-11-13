@@ -31,6 +31,26 @@ _XRAY_NETWORK = {
 }
 
 _reserved_ports: set[int] = set()
+_ssl_contexts: dict = {}
+
+
+def ssl_context(verify: bool = True):
+    """One shared SSL context per mode. A fresh httpx client per check used to
+    build its own context and reload the CA bundle each time (~2 MB and real
+    CPU per concurrent check)."""
+    ctx = _ssl_contexts.get(verify)
+    if ctx is None:
+        import ssl
+
+        import certifi
+        if verify:
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        _ssl_contexts[verify] = ctx
+    return ctx
 
 
 def allocate_port() -> int:
