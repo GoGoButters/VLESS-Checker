@@ -1,105 +1,103 @@
-"""Database models and engine setup for VPN Checker."""
+"""Database models and engine setup for VPN Checker.
+
+Every rating group is an isolated pipeline: its own sources, proxy pool,
+schedule, ban/retention policy and worker test parameters. Results live in
+``group_node_proxies`` — one row per (group, node, proxy) holding both the last
+test result and that node's ban/retention state for the proxy.
+"""
 from __future__ import annotations
 
+import json
 import logging
-import uuid
+import os
 from datetime import datetime, timezone
-from typing import Optional
 
-from sqlalchemy import text, event
-from sqlmodel import Field, SQLModel, create_engine, Session, UniqueConstraint
+from sqlalchemy import Index, LargeBinary, event, text
+from sqlmodel import Field, SQLModel, UniqueConstraint, create_engine
+from sqlmodel import Session as _SQLModelSession
 
 logger = logging.getLogger("vpn_checker.database")
 
-DATABASE_URL = "sqlite:///./data/vpn_checker.db"
+DB_PATH = os.environ.get("VPN_DB_PATH", "data/vpn_checker.db")
+DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-# Global generation_id for chunked testing (changes on each scheduler cycle)
-# Used to signal new test cycle to nodes - avoids circular import between main.py and scheduler.py
-generation_id: str = str(uuid.uuid4())
+PROTOCOLS = ("vless", "vmess", "trojan", "ss", "hy2", "hysteria2", "tuic", "hysteria", "anytls", "socks")
+DEFAULT_PROTOCOLS = {p: True for p in PROTOCOLS}
 
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    connect_args={
-        "check_same_thread": False,
-        "timeout": 30.0,
-    },
-    pool_size=20,
-    max_overflow=40,
+    connect_args={"check_same_thread": False, "timeout": 30.0},
+    pool_size=10,
+    max_overflow=30,
     pool_pre_ping=True,
     pool_recycle=1800,
     pool_timeout=60,
 )
 
 
-# Enable WAL mode for concurrent reads/writes
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA wal_autocheckpoint=256")
+    cursor.execute("PRAGMA wal_autocheckpoint=1000")
     cursor.execute("PRAGMA journal_size_limit=67108864")  # 64MB max WAL size
-    # Cap SQLite page cache (default 2MB is fine, but be explicit): the DB file
-    # page cache is charged to the container cgroup, so keep it bounded.
+    # The page cache is charged to the container cgroup: keep it bounded.
     cursor.execute("PRAGMA cache_size=-16000")  # 16MB
     cursor.execute("PRAGMA temp_store=MEMORY")
     cursor.execute("PRAGMA busy_timeout=30000")
     cursor.close()
 
 
+class Session(_SQLModelSession):
+    """Session whose objects stay readable after commit (no lazy refresh of
+    expired attributes on detached instances)."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("expire_on_commit", False)
+        super().__init__(*args, **kwargs)
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class Meta(SQLModel, table=True):
+    __tablename__ = "meta"
+    key: str = Field(primary_key=True)
+    value: str = Field(default="")
+
+
 class Subscription(SQLModel, table=True):
+    """Global source catalog; groups pick from it via GroupSource."""
     __tablename__ = "subscriptions"
     id: int | None = Field(default=None, primary_key=True)
     url: str = Field(unique=True, index=True)
-    added_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    added_at: str = Field(default_factory=utcnow)
     is_enabled: bool = Field(default=True)
     last_config_count: int = Field(default=0)
-
-    # [SUB-AUTOSKIP] Автоотключение тестов источника: 0 живых прокси за последние
-    # SUB_STATS_SAMPLES прогонов. Источник продолжаем опрашивать; если набор
-    # конфигов отличается от того, что был в момент отключения, тесты возобновляем.
-    stats_disabled: bool = Field(default=False)
-    disabled_signature: str = Field(default="")  # подпись набора на момент отключения
-    disabled_at: str = Field(default="")
+    last_fetch_at: str = Field(default="")
+    last_fetch_ok: bool = Field(default=False)
+    last_error: str = Field(default="")
 
 
-class RawProxy(SQLModel, table=True):
-    """Raw proxy URLs fetched from subscriptions, awaiting worker testing."""
-    __tablename__ = "raw_proxies"
-    id: int | None = Field(default=None, primary_key=True)
-    raw_url: str = Field(unique=True, index=True)
-    fetched_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    banned_until: str | None = Field(default=None, index=True)  # ISO timestamp or None
+class SourceSnapshot(SQLModel, table=True):
+    """Last successful fetch of a source: zlib-compressed newline-joined links.
 
-    consecutive_failures: int = Field(default=0)  # Consecutive check cycles failed on ALL workers
-
-    retention_cycles: int = Field(default=0)  # How many cycles this proxy has been retained after disappearing from subscriptions
-
-
-class NodeProxyState(SQLModel, table=True):  # [NODE-BAN]
-    """Пер-нодовая память о прокси: свой счётчик неудач, свой бан, свой retention.
-
-    Пара (нода, прокси) вместо глобальных полей RawProxy: прокси, который стабильно
-    проходит на одной ноде и никогда не проходит на другой, банится только для второй.
+    A failed fetch keeps the previous snapshot, so a flaky mirror never empties
+    the pools of the groups that use it.
     """
-    __tablename__ = "node_proxy_state"
-    __table_args__ = (
-        UniqueConstraint("node_id", "raw_url", name="uq_node_proxy_state"),
-    )
-    id: int | None = Field(default=None, primary_key=True)
-    node_id: int = Field(index=True)
-    raw_url: str = Field(index=True)
-    consecutive_failures: int = Field(default=0)
-    banned_until: str | None = Field(default=None, index=True)
-    retention_cycles: int = Field(default=0)
-    last_tested: str | None = Field(default=None)
-    last_passed: str | None = Field(default=None)
-    seen_in_sources: bool = Field(default=True)
+    __tablename__ = "source_snapshots"
+    subscription_id: int = Field(primary_key=True)
+    links: bytes = Field(default=b"", sa_type=LargeBinary)
+    count: int = Field(default=0)
+    signature: str = Field(default="")
+    fetched_at: str = Field(default="")
 
 
 class TestUrl(SQLModel, table=True):
-    """User-configurable URLs to check proxies against."""
+    """URLs every proxy is checked against (shared by all groups)."""
     __tablename__ = "test_urls"
     id: int | None = Field(default=None, primary_key=True)
     url: str = Field(unique=True, index=True)
@@ -109,13 +107,14 @@ class TestUrl(SQLModel, table=True):
 
 
 class RatingGroup(SQLModel, table=True):
-    """Rating group: a named set of nodes with its own webhook."""
+    """A rating group: nodes + sources + policy → its own webhook."""
     __tablename__ = "rating_groups"
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(default="", index=True)
     webhook_path: str = Field(default="", unique=True)
-    
-    # Per-rating webhook settings (override global)
+    created_at: str = Field(default_factory=utcnow)
+
+    # Webhook output
     max_proxies: int = Field(default=0)        # 0 = unlimited
     min_dl_kbps: int = Field(default=0)
     min_ul_kbps: int = Field(default=0)
@@ -123,80 +122,133 @@ class RatingGroup(SQLModel, table=True):
     consensus_only: bool = Field(default=False)
     geo_check_enabled: bool = Field(default=False)
     geo_top_n: int = Field(default=1)
-    
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    excluded_countries: str = Field(default="")  # comma-separated country names
+
+    # Sources
+    auto_add_new_sources: bool = Field(default=True)
+    enabled_protocols: str = Field(default=json.dumps(DEFAULT_PROTOCOLS))
+
+    # Auto-fetch scheduler (0 = manual only)
+    schedule_interval_minutes: int = Field(default=0)
+
+    # Proxy retention / ban management (per node inside the group)
+    good_proxy_retention_cycles: int = Field(default=3)
+    ban_duration_hours: int = Field(default=168)    # 0 = bans disabled
+    ban_after_n_failures: int = Field(default=3)
+
+    # Worker test parameters
+    ping_threshold_ms: int = Field(default=1000)
+    concurrent_checks_limit: int = Field(default=50)
+    http_timeout_s: int = Field(default=10)
+    speed_test_top_n: int = Field(default=0)
+    chunk_size: int = Field(default=0)
+
+    # Pipeline state (persisted: survives panel restarts)
+    generation_id: str = Field(default="")
+    generation_at: str = Field(default="")
+    last_fetch_at: str = Field(default="")
+    last_fetch_status: str = Field(default="")
+    pool_size: int = Field(default=0)
+
+    def protocols(self) -> dict:
+        try:
+            data = json.loads(self.enabled_protocols or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        return {p: bool(data.get(p, True)) for p in PROTOCOLS}
+
+    def excluded_country_set(self) -> set[str]:
+        return {c.strip().lower() for c in (self.excluded_countries or "").split(",") if c.strip()}
 
 
-class NodeRatingLink(SQLModel, table=True):
-    """Many-to-many link between nodes and rating groups."""
-    __tablename__ = "node_rating_links"
+class GroupSource(SQLModel, table=True):
+    """Source selected for a group, with the group's own dead-source autoskip."""
+    __tablename__ = "group_sources"
+    __table_args__ = (UniqueConstraint("group_id", "subscription_id", name="uq_group_source"),)
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int = Field(index=True)
+    subscription_id: int = Field(index=True)
+    stats_disabled: bool = Field(default=False)
+    disabled_signature: str = Field(default="")
+    disabled_at: str = Field(default="")
+
+
+class GroupSourceStat(SQLModel, table=True):
+    """One sample per (group, source) and fetch cycle: how many of the source's
+    proxies were tested by the group's nodes and how many of them were alive."""
+    __tablename__ = "group_source_stats"
+    __table_args__ = (Index("ix_gss_group_sub", "group_id", "subscription_id", "id"),)
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int
+    subscription_id: int
+    generation_id: str = Field(default="")
+    checked_at: str = Field(default_factory=utcnow)
+    tested: int = Field(default=0)
+    alive: int = Field(default=0)
+
+
+class GroupProxy(SQLModel, table=True):
+    """The group's proxy pool built from its sources (updated by diff)."""
+    __tablename__ = "group_proxies"
+    __table_args__ = (UniqueConstraint("group_id", "key", name="uq_group_proxy"),)
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int
+    key: str
+    raw_url: str
+
+
+class GroupNodeProxy(SQLModel, table=True):
+    """Last result + ban/retention state of one proxy on one node in one group."""
+    __tablename__ = "group_node_proxies"
     __table_args__ = (
-        UniqueConstraint("node_id", "rating_group_id", name="uq_node_rating"),
+        UniqueConstraint("group_id", "node_id", "key", name="uq_group_node_proxy"),
+        Index("ix_gnp_passing", "group_id", "node_id", sqlite_where=text("tests_passed > 0")),
     )
     id: int | None = Field(default=None, primary_key=True)
+    group_id: int
     node_id: int = Field(index=True)
-    rating_group_id: int = Field(index=True)
-
-
-class ProxyResult(SQLModel, table=True):
-    """Proxy test results. Used by workers as a data container; master reads from NodeProxyResult instead."""
-    __tablename__ = "proxy_results"
-    id: int | None = Field(default=None, primary_key=True)
-    raw_url: str = Field(default="", index=True)
+    key: str
+    raw_url: str
+    ident: str = Field(default="")
     ping_ms: int = Field(default=0)
     tests_passed: int = Field(default=0)
     tests_total: int = Field(default=0)
     download_speed_kbps: int = Field(default=0)
     upload_speed_kbps: int = Field(default=0)
     speed_score: float = Field(default=0.0)
-    tested_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    country_name: str = Field(default="")
+    last_tested: str = Field(default="")
+    last_passed: str = Field(default="")
+    generation_id: str = Field(default="")
+    consecutive_failures: int = Field(default=0)
+    banned_until: str | None = Field(default=None)
+    retention_cycles: int = Field(default=0)
+
+
+class NodeGroupState(SQLModel, table=True):
+    """Progress of one node on one group's current generation."""
+    __tablename__ = "node_group_state"
+    __table_args__ = (UniqueConstraint("group_id", "node_id", name="uq_node_group_state"),)
+    id: int | None = Field(default=None, primary_key=True)
+    group_id: int
+    node_id: int = Field(index=True)
+    status: str = Field(default="idle")          # idle | testing
+    run_seq: int = Field(default=0)              # bumped by "Run test" on a node
+    testing_generation: str = Field(default="")
+    current_chunk: int = Field(default=0)
+    total_chunks: int = Field(default=0)
+    completed_generation: str = Field(default="")
+    completed_at: str = Field(default="")
+    updated_at: str = Field(default="")
 
 
 class Settings(SQLModel, table=True):
+    """Panel-wide settings. Pipeline parameters live on RatingGroup."""
     __tablename__ = "settings"
     id: int | None = Field(default=None, primary_key=True)
     admin_pass_hash: str = Field(default="")
-    ping_threshold_ms: int = Field(default=1000)
-    webhook_secret_path: str = Field(default="secret-distrib")
-    concurrent_checks_limit: int = Field(default=50)
-    schedule_interval_minutes: int = Field(default=0)
-    webhook_max_proxies: int = Field(default=0)
-    http_timeout_s: int = Field(default=10)
-    speed_test_top_n: int = Field(default=0)  # 0 = disabled
     node_api_token: str = Field(default="")
-    node_check_top_n: int = Field(default=50)
-
-    # Webhook filtering
-    webhook_min_dl_kbps: int = Field(default=0)   # min download speed (KB/s), 0 = no filter
-    webhook_min_ul_kbps: int = Field(default=0)   # min upload speed (KB/s), 0 = no filter
-    webhook_rename_prefix: str = Field(default="")  # optional rename prefix for configs
-    webhook_consensus_only: bool = Field(default=False)  # if True, return only proxies confirmed by ALL online nodes
-
-    # Global Consensus settings
-    global_sub_min_nodes: int = Field(default=1)
-    global_sub_top_n: int = Field(default=50)
-
-    # Ban settings
-    ban_duration_hours: int = Field(default=168)  # 7 days = 168 hours, 0 = disabled
-
-    ban_after_n_failures: int = Field(default=3)  # Ban after N consecutive failures on ALL workers
-
-    # Proxy retention: remember tested proxies for N cycles after they disappear from subscriptions
-    good_proxy_retention_cycles: int = Field(default=3)  # 0 = disable retention
-
-    # Protocol filter: JSON dict with enabled protocols (e.g., {"vless":true,"vmess":true,"ss":false})
-    enabled_protocols: str = Field(default='{"vless":true,"vmess":true,"trojan":true,"ss":true,"hy2":true,"hysteria2":true}')
-
-    # Chunking: 0 = disabled (process all at once), N > 0 = process N proxies per chunk for dynamic rating updates
-    chunk_size: int = Field(default=0)
-
-    # Geo top-N: how many top proxies to keep per country in webhook output (default 1)
-    webhook_geo_top_n: int = Field(default=1)
-    
-    # Node logging control
     node_log_level: str = Field(default="info")  # debug|info|warning|error|off
-    
-    # MCP Server authentication
     mcp_read_token: str = Field(default="")
     mcp_admin_token: str = Field(default="")
 
@@ -208,274 +260,44 @@ class Node(SQLModel, table=True):
     name: str = Field(default="")
     region: str = Field(default="")
     ip: str = Field(default="")
+    instance_id: str = Field(default="")
+    protocol: int = Field(default=1)     # 1 = legacy worker, 2 = jobs API
     last_heartbeat: str = Field(default="")
     is_online: bool = Field(default=False)
-    proxies_checked: int = Field(default=0)
-    proxies_passed: int = Field(default=0)
-    registered_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    # Worker-side chunking: status tracking
-    status: str = Field(default="idle")            # "idle" | "testing"
-    current_chunk: int = Field(default=0)          # 1-indexed: which chunk worker is testing now
-    total_chunks: int = Field(default=0)           # total chunks for current test run
-    testing_generation_id: str = Field(default="")  # which generation_id the worker is testing
-    force_test: bool = Field(default=False)        # manual trigger to bypass schedule guard
+    registered_at: str = Field(default_factory=utcnow)
 
 
-class NodeProxyResult(SQLModel, table=True):
-    """Proxy results from a specific node."""
-    __tablename__ = "node_proxy_results"
-    __table_args__ = (
-        UniqueConstraint("node_id", "raw_url", name="uq_node_proxy"),
-    )
+class NodeRatingLink(SQLModel, table=True):
+    """Many-to-many link between nodes and rating groups."""
+    __tablename__ = "node_rating_links"
+    __table_args__ = (UniqueConstraint("node_id", "rating_group_id", name="uq_node_rating"),)
     id: int | None = Field(default=None, primary_key=True)
     node_id: int = Field(index=True)
-    raw_url: str = Field(index=True)
-    ping_ms: int = Field(default=0)
-    tests_passed: int = Field(default=0)
-    tests_total: int = Field(default=0)
-    download_speed_kbps: int = Field(default=0)
-    upload_speed_kbps: int = Field(default=0)
-    speed_score: float = Field(default=0.0)
-    last_tested: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    country_name: str = Field(default="")  # Detected country name in Russian (e.g. "США", "Германия")
+    rating_group_id: int = Field(index=True)
 
 
-# [SUB-STATS] Одна выборка по источнику за цикл: сколько его прокси проверено и сколько живо.
-class SubscriptionTestStat(SQLModel, table=True):
-    __tablename__ = "subscription_test_stats"
-    id: int | None = Field(default=None, primary_key=True)
-    subscription_id: int = Field(index=True)
-    generation_id: str = Field(default="", index=True)
-    checked_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    tested: int = Field(default=0)   # уникальных конфигов источника в этом цикле
-    alive: int = Field(default=0)    # из них с успешными тестами (tests_passed > 0)
+def effective_generation(group_generation: str, run_seq: int) -> str:
+    """Generation a node works on: the group's fetch generation plus the node's
+    manual re-test counter, so "Run test" re-tests without refetching sources."""
+    return f"{group_generation}.{run_seq}" if group_generation else ""
 
 
 def create_db_and_tables():
-    """Create database tables if they don't exist."""
-    import os
-    os.makedirs("data", exist_ok=True)
+    """Create tables, migrate older schemas and seed defaults."""
+    import migrations
+
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    migrations.prepare_legacy(DB_PATH)
     SQLModel.metadata.create_all(engine)
-    _migrate_db()
-    _seed_default_test_urls()
+    migrations.migrate(DB_PATH)
 
 
-def _migrate_db():
-    """Add new columns to existing tables if they are missing (SQLite)."""
-    import sqlite3
-    db_path = DATABASE_URL.replace("sqlite:///", "")
-    try:
-        conn = sqlite3.connect(db_path)
-        
-        # Settings migrations
-        cursor = conn.execute("PRAGMA table_info(settings)")
-        existing = {row[1] for row in cursor.fetchall()}
-        settings_migrations = [
-            ("schedule_interval_minutes", "INTEGER DEFAULT 0"),
-            ("webhook_max_proxies", "INTEGER DEFAULT 0"),
-            ("http_timeout_s", "INTEGER DEFAULT 10"),
-            ("speed_test_top_n", "INTEGER DEFAULT 0"),
-            ("node_api_token", "TEXT DEFAULT ''"),
-            ("node_check_top_n", "INTEGER DEFAULT 50"),
-            ("global_sub_min_nodes", "INTEGER DEFAULT 1"),
-            ("global_sub_top_n", "INTEGER DEFAULT 50"),
-            ("webhook_min_dl_kbps", "INTEGER DEFAULT 0"),
-            ("webhook_min_ul_kbps", "INTEGER DEFAULT 0"),
-            ("webhook_rename_prefix", "TEXT DEFAULT ''"),
-            ("webhook_consensus_only", "INTEGER DEFAULT 0"),
-            ("ban_duration_hours", "INTEGER DEFAULT 168"),
-
-            ("ban_after_n_failures", "INTEGER DEFAULT 3"),
-            ("good_proxy_retention_cycles", "INTEGER DEFAULT 3"),
-            ("enabled_protocols", "TEXT DEFAULT '{\"vless\":true,\"vmess\":true,\"trojan\":true,\"ss\":true,\"hy2\":true,\"hysteria2\":true}'"),
-            ("chunk_size", "INTEGER DEFAULT 0"),
-            ("geo_check_enabled", "INTEGER DEFAULT 0"),
-            ("webhook_geo_top_n", "INTEGER DEFAULT 1"),
-            ("node_log_level", "TEXT DEFAULT 'info'"),
-            ("mcp_read_token", "TEXT DEFAULT ''"),
-            ("mcp_admin_token", "TEXT DEFAULT ''"),
-        ]
-        for col_name, col_def in settings_migrations:
-            if col_name not in existing:
-                conn.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
-        
-        # Subscription migrations
-        cursor = conn.execute("PRAGMA table_info(subscriptions)")
-        sub_existing = {row[1] for row in cursor.fetchall()}
-        sub_migrations = [
-            ("is_enabled", "INTEGER DEFAULT 1"),
-            ("last_config_count", "INTEGER DEFAULT 0"),
-            # [SUB-AUTOSKIP]
-            ("stats_disabled", "INTEGER DEFAULT 0"),
-            ("disabled_signature", "TEXT DEFAULT ''"),
-            ("disabled_at", "TEXT DEFAULT ''"),
-        ]
-        for col_name, col_def in sub_migrations:
-            if col_name not in sub_existing:
-                conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col_name} {col_def}")
-        
-        # RatingGroup migrations
-        cursor = conn.execute("PRAGMA table_info(rating_groups)")
-        rg_existing = {row[1] for row in cursor.fetchall()}
-        rg_migrations = [
-            ("max_proxies", "INTEGER DEFAULT 0"),
-            ("min_dl_kbps", "INTEGER DEFAULT 0"),
-            ("min_ul_kbps", "INTEGER DEFAULT 0"),
-            ("rename_prefix", "TEXT DEFAULT ''"),
-            ("consensus_only", "INTEGER DEFAULT 0"),
-            ("geo_top_n", "INTEGER DEFAULT 1"),
-            ("geo_check_enabled", "INTEGER DEFAULT 0"),
-        ]
-        for col_name, col_def in rg_migrations:
-            if col_name not in rg_existing:
-                conn.execute(f"ALTER TABLE rating_groups ADD COLUMN {col_name} {col_def}")
-
-        # RawProxy migrations
-        cursor = conn.execute("PRAGMA table_info(raw_proxies)")
-        raw_existing = {row[1] for row in cursor.fetchall()}
-        if "banned_until" not in raw_existing:
-            conn.execute("ALTER TABLE raw_proxies ADD COLUMN banned_until TEXT DEFAULT NULL")
-
-        if "consecutive_failures" not in raw_existing:
-            conn.execute("ALTER TABLE raw_proxies ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
-
-        if "retention_cycles" not in raw_existing:
-            conn.execute("ALTER TABLE raw_proxies ADD COLUMN retention_cycles INTEGER DEFAULT 0")
-
-        # [NODE-BAN] пер-нодовое состояние (бан/retention) — создаётся идемпотентно
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS node_proxy_state ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "node_id INTEGER NOT NULL, "
-            "raw_url TEXT NOT NULL, "
-            "consecutive_failures INTEGER DEFAULT 0, "
-            "banned_until TEXT DEFAULT NULL, "
-            "retention_cycles INTEGER DEFAULT 0, "
-            "last_tested TEXT DEFAULT NULL, "
-            "last_passed TEXT DEFAULT NULL, "
-            "seen_in_sources INTEGER DEFAULT 1)"
-        )
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_node_proxy_state ON node_proxy_state(node_id, raw_url)")
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_nps_node_id ON node_proxy_state(node_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS ix_nps_banned_until ON node_proxy_state(banned_until)")
-        
-        # Node migrations (new fields for worker-side chunking status tracking)
-        cursor = conn.execute("PRAGMA table_info(nodes)")
-        node_existing = {row[1] for row in cursor.fetchall()}
-        node_migrations = [
-            ("status", "TEXT DEFAULT 'idle'"),
-            ("current_chunk", "INTEGER DEFAULT 0"),
-            ("total_chunks", "INTEGER DEFAULT 0"),
-            ("testing_generation_id", "TEXT DEFAULT ''"),
-            ("force_test", "INTEGER DEFAULT 0"),
-        ]
-        for col_name, col_def in node_migrations:
-            if col_name not in node_existing:
-                conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_def}")
-
-        # NodeProxyResult: deduplicate before adding unique constraint
-        try:
-            conn.execute("""
-                DELETE FROM node_proxy_results
-                WHERE id NOT IN (
-                    SELECT MIN(id)
-                    FROM node_proxy_results
-                    GROUP BY node_id, raw_url
-                )
-            """)
-        except Exception:
-            pass  # Table doesn't exist yet
-
-        # NodeProxyResult: add unique constraint on (node_id, raw_url)
-        try:
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_node_proxy "
-                "ON node_proxy_results (node_id, raw_url)"
-            )
-        except Exception:
-            pass  # Index already exists or table doesn't exist yet
-
-        # Index hygiene: SQLModel already creates ix_node_proxy_results_raw_url /
-        # ix_node_proxy_results_node_id for the indexed columns. Older builds also
-        # created ix_npr_raw_url / ix_npr_node_id — exact duplicates that wasted
-        # ~250MB of file and slowed every write. Drop them when the canonical
-        # index exists; if it does not, keep the duplicate (it is still needed).
-        def _index_exists(name: str) -> bool:
-            row = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
-                (name,),
-            ).fetchone()
-            return row is not None
-
-        for dup, canonical in (
-            ("ix_npr_raw_url", "ix_node_proxy_results_raw_url"),
-            ("ix_npr_node_id", "ix_node_proxy_results_node_id"),
-        ):
-            if _index_exists(dup) and _index_exists(canonical):
-                try:
-                    conn.execute(f"DROP INDEX IF EXISTS {dup}")
-                    logger.info(f"Dropped duplicate index {dup} (canonical: {canonical})")
-                except Exception as e:
-                    logger.warning(f"Failed to drop duplicate index {dup}: {e}")
-
-        # Partial index: makes DISTINCT/aggregate scans filtered by tests_passed > 0
-        # cheap (these were the 45-67s scheduler queries on the bloated DB).
-        try:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS ix_npr_passing "
-                "ON node_proxy_results (raw_url) WHERE tests_passed > 0"
-            )
-        except Exception:
-            pass
-
-        # NodeProxyResult migrations
-        try:
-            cursor = conn.execute("PRAGMA table_info(node_proxy_results)")
-            npr_existing = {row[1] for row in cursor.fetchall()}
-            if "country_name" not in npr_existing:
-                conn.execute("ALTER TABLE node_proxy_results ADD COLUMN country_name TEXT DEFAULT ''")
-        except Exception:
-            pass  # Table doesn't exist yet
-
-        conn.commit()
-
-        # Let SQLite refresh its query-planner statistics for the new indexes.
-        # (WAL checkpointing/compaction is handled by db_maintenance.run_maintenance
-        #  at startup — doing TRUNCATE here on a bloated DB held the file open.)
-        try:
-            conn.execute("PRAGMA optimize")
-        except Exception:
-            pass
-
-        conn.close()
-
-        # Drop legacy tables
-        with engine.begin() as conn:
-            try:
-                conn.execute(text("DROP TABLE IF EXISTS valid_proxies"))
-            except Exception:
-                pass
-    except Exception:
-        pass
+def get_meta(session: Session, key: str, default: str = "") -> str:
+    row = session.get(Meta, key)
+    return row.value if row else default
 
 
-def _seed_default_test_urls():
-    """Seed default test URLs if the table is empty."""
-    with Session(engine) as session:
-        from sqlmodel import select, func
-        count = session.exec(select(func.count(TestUrl.id))).one()
-        if count == 0:
-            defaults = [
-                TestUrl(url="https://www.gstatic.com/generate_204", expect_status=204, min_body_bytes=0, position=0),
-                TestUrl(url="https://www.google.com", expect_status=200, min_body_bytes=1000, position=1),
-                TestUrl(url="https://www.youtube.com", expect_status=200, min_body_bytes=1000, position=2),
-            ]
-            for t in defaults:
-                session.add(t)
-            session.commit()
-
-
-def get_session():
-    """Yield a database session."""
-    with Session(engine) as session:
-        yield session
+def set_meta(session: Session, key: str, value: str) -> None:
+    row = session.get(Meta, key) or Meta(key=key)
+    row.value = value
+    session.add(row)

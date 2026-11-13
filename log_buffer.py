@@ -28,10 +28,6 @@ class LogBuffer:
         with self._lock:
             return [r for r in self._buffer if r["id"] > after_id]
 
-    def clear(self):
-        with self._lock:
-            self._buffer.clear()
-            self._counter = 0
 
 
 class BufferHandler(logging.Handler):
@@ -59,12 +55,17 @@ log_buffer = LogBuffer(maxlen=1000)
 
 
 def setup_log_buffer():
-    """Attach the buffer handler to the root logger."""
+    """Attach the buffer handler to the root logger and uvicorn's own logger.
+
+    Access logs stay out: heartbeats and polls would push every useful line
+    out of the 1000-entry buffer within minutes.
+    """
+    root = logging.getLogger()
+    if any(isinstance(h, BufferHandler) for h in root.handlers):
+        return
     handler = BufferHandler(log_buffer)
-    handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-    handler.setFormatter(formatter)
-    logging.getLogger().addHandler(handler)
-    # Also capture uvicorn logs
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error"]:
-        logging.getLogger(logger_name).addHandler(handler)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+    root.addHandler(handler)
+    logging.getLogger("uvicorn").addHandler(handler)
+    logging.getLogger("httpx").setLevel(logging.WARNING)

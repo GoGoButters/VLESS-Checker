@@ -2,235 +2,70 @@
 {% block title %}{{ t(request, 'settings_title') }} — {{ t(request, 'app_title') }}{% endblock %}
 
 {% block content %}
+{% set input = "w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm" %}
 <div class="mb-8">
     <h1 class="text-3xl font-bold text-white">{{ t(request, 'settings_title') }}</h1>
-    <p class="text-slate-400 mt-1">{{ t(request, 'settings_desc', default='Configure manager and worker parameters') }}</p>
+    <p class="text-slate-400 mt-1">{{ t(request, 'settings_desc_v2', default='Panel-wide settings.') }}</p>
 </div>
 
 {% if saved %}
-<div class="mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm flex items-center gap-2 fade-in">
-    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-    </svg>
-    {{ t(request, 'settings_saved', default='Settings saved successfully!') }}
-</div>
+<div class="mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">{{ t(request, 'settings_saved', default='Settings saved successfully!') }}</div>
 {% endif %}
 
+<div class="mb-6 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-200 text-sm">
+    {{ t(request, 'settings_moved', default='Scheduler, retention, bans, protocol filter and worker test parameters are set per rating group:') }}
+    <a href="/ratings" class="underline text-indigo-300 hover:text-white">{{ t(request, 'nav_ratings', default='Ratings') }}</a>
+</div>
+
 <form method="POST" action="/settings" class="space-y-6">
-    <div class="glass rounded-2xl p-6 glow-accent">
-        <h2 class="text-lg font-semibold text-white mb-2">{{ t(request, 'settings_worker_params', default='Worker Test Parameters') }}</h2>
-        <p class="text-sm text-slate-400 mb-6">{{ t(request, 'settings_worker_desc', default='These settings are pushed to all worker nodes via the Node API.') }}</p>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-                <label for="ping_threshold_ms" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_ping_threshold', default='Ping Threshold (ms)') }}</label>
-                <input type="number" name="ping_threshold_ms" id="ping_threshold_ms" min="50" max="10000"
-                    value="{{ settings.ping_threshold_ms }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_ping_desc', default='Workers will skip proxies with TCP ping above this value') }}</p>
-            </div>
-            <div>
-                <label for="concurrent_checks_limit" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_concurrent', default='Concurrent Checks') }}</label>
-                <input type="number" name="concurrent_checks_limit" id="concurrent_checks_limit" min="1" max="500"
-                    value="{{ settings.concurrent_checks_limit }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_concurrent_desc', default='Max simultaneous proxy checks per worker node') }}</p>
-            </div>
-            <div>
-                <label for="http_timeout_s" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_timeout', default='HTTP Check Timeout (seconds)') }}</label>
-                <input type="number" name="http_timeout_s" id="http_timeout_s" min="1" max="60"
-                    value="{{ settings.http_timeout_s }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_timeout_desc', default='Timeout for each test URL check per proxy on workers') }}</p>
-            </div>
-            <div>
-                <label for="speed_test_top_n" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_speed_test', default='Speed Test Top-N (per worker)') }}</label>
-                <input type="number" name="speed_test_top_n" id="speed_test_top_n" min="0" max="50000"
-                    value="{{ settings.speed_test_top_n }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_speed_test_desc', default='Workers will run download/upload benchmark on top N proxies. 0 to disable.') }}</p>
-            </div>
-            <div>
-                <label for="chunk_size" class="block text-sm font-medium text-slate-300 mb-2">Chunk Size</label>
-                <input type="number" name="chunk_size" id="chunk_size" min="0" max="10000"
-                    value="{{ settings.chunk_size or 0 }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">Process proxies in chunks for dynamic rating updates. Recommended: 100-500. 0 = disabled (process all at once).</p>
-            </div>
-            <div class="col-span-1 md:col-span-2 mt-2">
-                <label class="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" name="geo_check_enabled" value="1"
-                        {% if settings.geo_check_enabled %}checked{% endif %}
-                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-800">
-                    <span class="text-sm text-white">{{ t(request, 'settings_geo_check', default='Country detection (GeoIP)') }}</span>
-                </label>
-                <p class="text-xs text-slate-500 mt-1 ml-8">{{ t(request, 'settings_geo_check_desc', default='Workers detect proxy country via GeoIP after speed tests.') }}</p>
-            </div>
-        </div>
-    </div>
-
-    <div class="glass rounded-2xl p-6">
-        <h2 class="text-lg font-semibold text-white mb-2">Protocol Filter</h2>
-        <p class="text-sm text-slate-400 mb-4">Only selected protocols will be fetched from subscriptions and tested.</p>
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_vless" value="1" {% if enabled_protocols.get('vless', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">VLESS</span>
-            </label>
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_vmess" value="1" {% if enabled_protocols.get('vmess', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">VMess</span>
-            </label>
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_trojan" value="1" {% if enabled_protocols.get('trojan', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">Trojan</span>
-            </label>
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_ss" value="1" {% if enabled_protocols.get('ss', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">Shadowsocks</span>
-            </label>
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_hy2" value="1" {% if enabled_protocols.get('hy2', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">Hysteria2</span>
-            </label>
-            <label class="flex items-center gap-2 bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700/70 transition">
-                <input type="checkbox" name="proto_hysteria2" value="1" {% if enabled_protocols.get('hysteria2', true) %}checked{% endif %}
-                       class="w-4 h-4 rounded border-slate-500 bg-slate-600 text-indigo-500 focus:ring-indigo-500">
-                <span class="text-sm font-medium text-white">Hysteria2 (alt)</span>
-            </label>
-        </div>
-    </div>
-
-    <div class="glass rounded-2xl p-6">
-        <h2 class="text-lg font-semibold text-white mb-6">{{ t(request, 'dash_scheduler', default='Auto-Fetch Scheduler') }}</h2>
-        <div>
-            <label for="schedule_interval_minutes" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_fetch_interval', default='Fetch Interval (minutes)') }}</label>
-            <input type="number" name="schedule_interval_minutes" id="schedule_interval_minutes" min="0" max="10080"
-                value="{{ settings.schedule_interval_minutes }}"
-                class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-            <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_fetch_interval_desc', default='Auto-fetch subscriptions every N minutes. Workers will pick up new proxies automatically. 0 = disabled.') }}</p>
-        </div>
-    </div>
-
     <div class="glass rounded-2xl p-6">
         <h2 class="text-lg font-semibold text-white mb-6">{{ t(request, 'settings_node_mgmt', default='Node Management') }}</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
                 <label class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_node_token', default='Node API Token') }}</label>
                 <div class="flex items-center gap-2">
-                    <input type="text" readonly value="{{ settings.node_api_token }}"
-                        class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-600/30 text-emerald-400 outline-none text-sm font-mono cursor-text">
-                    <button type="button" onclick="document.getElementById('regenTokenForm').submit();" class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
-                        {{ t(request, 'settings_regen', default='Regenerate') }}
-                    </button>
+                    <input type="text" readonly value="{{ settings.node_api_token }}" class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-600/30 text-emerald-400 outline-none text-sm font-mono">
+                    <button type="button" onclick="if(confirm('{{ t(request, 'settings_regen_confirm', default='All nodes must get the new token. Continue?') }}')) document.getElementById('regenTokenForm').submit();" class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-slate-300 hover:text-white">{{ t(request, 'settings_regen', default='Regenerate') }}</button>
                 </div>
                 <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_node_token_desc', default='Bearer token used by remote worker nodes to authenticate.') }}</p>
             </div>
             <div>
-                <label for="node_check_top_n" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_proxies_per_worker', default='Proxies Per Worker') }}</label>
-                <input type="number" name="node_check_top_n" id="node_check_top_n" min="0" max="50000"
-                    value="{{ settings.node_check_top_n }}"
-                    class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_proxies_per_worker_desc', default='Max number of raw proxies to send to each worker. 0 = all proxies.') }}</p>
-            </div>
-        </div>
-        <div class="mt-6">
-            <label for="node_log_level" class="block text-sm font-medium text-slate-300 mb-2">Worker Log Level</label>
-            <select name="node_log_level" id="node_log_level" class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm appearance-none">
-                <option value="debug" {% if settings.node_log_level == 'debug' %}selected{% endif %}>Debug (All)</option>
-                <option value="info" {% if settings.node_log_level == 'info' %}selected{% endif %}>Info (Default)</option>
-                <option value="warning" {% if settings.node_log_level == 'warning' %}selected{% endif %}>Warning</option>
-                <option value="error" {% if settings.node_log_level == 'error' %}selected{% endif %}>Error Only</option>
-                <option value="off" {% if settings.node_log_level == 'off' %}selected{% endif %}>Off (No Logs)</option>
-            </select>
-            <p class="text-xs text-slate-500 mt-1">Controls the verbosity of logs sent from remote worker nodes to the master panel.</p>
-        </div>
-    </div>
-
-    <div class="glass rounded-2xl p-6">
-        <h2 class="text-lg font-semibold text-white mb-6">{{ t(request, 'settings_retention_title', default='Proxy Retention') }}</h2>
-        <p class="text-sm text-slate-400 mb-6">{{ t(request, 'settings_retention_desc', default='Proxies that passed tests remain in the test pool even after disappearing from subscriptions, for a limited number of fetch cycles.') }}</p>
-        <div>
-            <label for="good_proxy_retention_cycles" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_retention_cycles', default='Retention Cycles (N)') }}</label>
-            <input type="number" name="good_proxy_retention_cycles" id="good_proxy_retention_cycles" min="0" max="100"
-                value="{{ settings.good_proxy_retention_cycles }}"
-                class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-            <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_retention_desc2', default='Good proxies are kept for N fetch cycles after disappearing from subscriptions. 0 = disable retention (only fresh subscriptions). Default: 3.') }}</p>
-        </div>
-    </div>
-
-    <div class="glass rounded-2xl p-6">
-        <h2 class="text-lg font-semibold text-white mb-6">{{ t(request, 'settings_ban_mgmt', default='Ban Management') }}</h2>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-                <label for="ban_duration_hours" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_ban_duration', default='Ban Duration (hours)') }}</label>
-                <input type="number" name="ban_duration_hours" id="ban_duration_hours" min="0" max="8760"
-                        value="{{ settings.ban_duration_hours }}"
-                        class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_ban_duration_desc', default='Failed proxies are banned for N hours after testing. 0 = disabled (no ban). Default: 168h (7 days).') }}</p>
-            </div>
-            <div>
-                <label for="ban_after_n_failures" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_ban_failures', default='Ban After N Failures') }}</label>
-                <input type="number" name="ban_after_n_failures" id="ban_after_n_failures" min="1" max="100"
-                        value="{{ settings.ban_after_n_failures }}"
-                        class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm">
-                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_ban_failures_desc', default='Ban only after N consecutive failed checks on ALL connected workers. Default: 3.') }}</p>
+                <label for="node_log_level" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_node_log_level', default='Worker log level') }}</label>
+                <select name="node_log_level" id="node_log_level" class="{{ input }}">
+                    {% for v, label in [('debug', 'Debug'), ('info', 'Info'), ('warning', 'Warning'), ('error', 'Error'), ('off', 'Off')] %}
+                    <option value="{{ v }}" {% if settings.node_log_level == v %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_node_log_desc', default='Verbosity of logs nodes send to the Logs page.') }}</p>
             </div>
         </div>
     </div>
 
     <div class="glass rounded-2xl p-6">
         <h2 class="text-lg font-semibold text-white mb-6">MCP API Keys</h2>
-        <p class="text-sm text-slate-400 mb-6">Use these tokens to authenticate AI agents with the MCP Server endpoints.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {% for label, value, form_id, endpoint in [('Read-Only Token', settings.mcp_read_token, 'regenMCPReadForm', '/mcp/read/sse'), ('Admin Token', settings.mcp_admin_token, 'regenMCPAdminForm', '/mcp/admin/sse')] %}
             <div>
-                <label class="block text-sm font-medium text-slate-300 mb-2">Read-Only Token</label>
+                <label class="block text-sm font-medium text-slate-300 mb-2">{{ label }}</label>
                 <div class="flex items-center gap-2">
-                    <input type="text" readonly value="{{ settings.mcp_read_token }}"
-                        class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-600/30 text-emerald-400 outline-none text-sm font-mono cursor-text">
-                    <button type="button" onclick="document.getElementById('regenMCPReadForm').submit();" class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
-                        {{ t(request, 'settings_regen', default='Regenerate') }}
-                    </button>
+                    <input type="text" readonly value="{{ value }}" class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-600/30 text-emerald-400 outline-none text-sm font-mono">
+                    <button type="button" onclick="document.getElementById('{{ form_id }}').submit();" class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-slate-300 hover:text-white">{{ t(request, 'settings_regen', default='Regenerate') }}</button>
                 </div>
-                <p class="text-xs text-slate-500 mt-1">Endpoint: /mcp/read/sse</p>
+                <p class="text-xs text-slate-500 mt-1">Endpoint: {{ endpoint }}</p>
             </div>
-            <div>
-                <label class="block text-sm font-medium text-slate-300 mb-2">Admin Token</label>
-                <div class="flex items-center gap-2">
-                    <input type="text" readonly value="{{ settings.mcp_admin_token }}"
-                        class="flex-1 px-4 py-3 rounded-xl bg-slate-900 border border-slate-600/30 text-emerald-400 outline-none text-sm font-mono cursor-text">
-                    <button type="button" onclick="document.getElementById('regenMCPAdminForm').submit();" class="px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-slate-300 hover:text-white hover:border-slate-500 transition-colors">
-                        {{ t(request, 'settings_regen', default='Regenerate') }}
-                    </button>
-                </div>
-                <p class="text-xs text-slate-500 mt-1">Endpoint: /mcp/admin/sse</p>
-            </div>
+            {% endfor %}
         </div>
     </div>
 
     <div class="glass rounded-2xl p-6">
         <h2 class="text-lg font-semibold text-white mb-6">{{ t(request, 'settings_security', default='Security') }}</h2>
-        <div>
-            <label for="new_password" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_new_pass', default='New Password') }}</label>
-            <input type="password" name="new_password" id="new_password"
-                class="w-full px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white placeholder-slate-500 outline-none text-sm"
-                placeholder="{{ t(request, 'settings_new_pass_placeholder', default='Leave empty to keep current password') }}">
-            <p class="text-xs text-slate-500 mt-1">{{ t(request, 'settings_new_pass_desc', default='Set a new admin password') }}</p>
-        </div>
+        <label for="new_password" class="block text-sm font-medium text-slate-300 mb-2">{{ t(request, 'settings_new_pass', default='New Password') }}</label>
+        <input type="password" name="new_password" id="new_password" autocomplete="new-password" class="{{ input }}"
+            placeholder="{{ t(request, 'settings_new_pass_placeholder', default='Leave empty to keep current password') }}">
     </div>
 
     <div class="flex justify-end">
-        <button type="submit" class="btn-primary px-8 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-            </svg>
-            {{ t(request, 'settings_save', default='Save Settings') }}
-        </button>
+        <button type="submit" class="btn-primary px-8 py-3 rounded-xl text-white font-semibold text-sm">{{ t(request, 'settings_save', default='Save Settings') }}</button>
     </div>
 </form>
 

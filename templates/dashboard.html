@@ -1,316 +1,102 @@
 {% extends "base.html" %}
 {% block title %}{{ t(request, 'dash_title') }} — {{ t(request, 'app_title') }}{% endblock %}
-
 {% block content %}
-<div class="mb-8">
-    <h1 class="text-3xl font-bold text-white">{{ t(request, 'dash_title') }}</h1>
-    <p class="text-slate-400 mt-1">{{ t(request, 'dash_subtitle', default='Manager panel — all testing is performed by worker nodes') }}</p>
+<div class="flex items-start justify-between mb-8 gap-4 flex-wrap">
+    <div>
+        <h1 class="text-3xl font-bold text-white">{{ t(request, 'dash_title') }}</h1>
+        <p class="text-slate-400 mt-1">{{ t(request, 'dash_subtitle', default='Manager panel — all testing is performed by worker nodes') }}</p>
+    </div>
+    <form method="POST" action="/fetch-subs">
+        <button type="submit" class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm">{{ t(request, 'dash_fetch_all', default='Fetch all groups now') }}</button>
+    </form>
 </div>
 
-<!-- Stats Grid -->
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5 mb-8">
-    <!-- Subscriptions -->
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-5 mb-8">
+    {% for value, label, color in [
+        (sub_count, t(request, 'dash_total_subs'), 'text-white'),
+        (pool_total, t(request, 'dash_pool_total', default='Proxies in pools'), 'text-amber-400'),
+        (valid_total, t(request, 'dash_valid_proxies', default='Valid Proxies'), 'text-emerald-400'),
+        (test_url_count, t(request, 'nav_test_urls'), 'text-white'),
+        (node_online ~ ' / ' ~ node_count, t(request, 'dash_nodes_online', default='Nodes online'), 'text-indigo-300'),
+    ] %}
     <div class="stat-card glass rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-white">{{ sub_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_total_subs') }}</div>
+        <div class="text-3xl font-bold {{ color }}">{{ value }}</div>
+        <div class="text-sm text-slate-400 mt-1">{{ label }}</div>
     </div>
-
-    <!-- Raw Proxies (fetched) -->
-    <div class="stat-card glass rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-amber-400">{{ raw_proxy_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_raw_proxies', default='Raw Proxies') }}</div>
-    </div>
-
-    <!-- Valid Proxies (from nodes) -->
-    <div class="stat-card glass rounded-2xl p-6 glow-emerald">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-emerald-400">{{ valid_proxy_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_valid_proxies', default='Valid Proxies') }}</div>
-    </div>
-
-    <!-- Test URLs -->
-    <div class="stat-card glass rounded-2xl p-6">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-white">{{ test_url_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'nav_test_urls') }}</div>
-    </div>
-
-    <!-- Active Nodes -->
-    <div class="stat-card glass rounded-2xl p-6 glow-accent">
-        <div class="flex items-center justify-between mb-4">
-            <div class="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
-                </svg>
-            </div>
-        </div>
-        <div class="text-3xl font-bold text-white">{{ node_count }}</div>
-        <div class="text-sm text-slate-400 mt-1">{{ t(request, 'nodes_title') }}</div>
-    </div>
+    {% endfor %}
 </div>
 
-<!-- Scheduler Status -->
-<div class="glass rounded-2xl p-6 mb-8">
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div class="flex items-center gap-4">
-            <div class="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
-                <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-            </div>
-            <div>
-                <h2 class="text-lg font-semibold text-white flex items-center gap-2">
-                    {{ t(request, 'dash_scheduler', default='Auto-Fetch Scheduler') }}
-                    <span id="scheduler-badge" class="text-xs font-medium px-2 py-0.5 rounded-full
-                        {% if settings.schedule_interval_minutes > 0 %}
-                            bg-cyan-500/15 text-cyan-400 border border-cyan-500/20
-                        {% else %}
-                            bg-slate-500/15 text-slate-400 border border-slate-500/20
-                        {% endif %}">
-                        {% if settings.schedule_interval_minutes > 0 %}
-                            {{ t(request, 'dash_every', default='Every') }} {{ settings.schedule_interval_minutes }} {{ t(request, 'settings_minutes') }}
-                        {% else %}
-                            {{ t(request, 'dash_disabled', default='Disabled') }}
-                        {% endif %}
-                    </span>
-                </h2>
-                <p id="scheduler-next" class="text-sm text-slate-400 mt-0.5">
-                    {% if settings.schedule_interval_minutes > 0 %}
-                        {{ t(request, 'dash_waiting_fetch', default='Waiting for next fetch…') }}
-                    {% else %}
-                        {{ t(request, 'dash_enable_in_settings', default='Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.')|safe }}
-                    {% endif %}
-                </p>
-            </div>
-        </div>
-    </div>
+<div class="glass rounded-2xl p-5 mb-8 flex items-center gap-3 text-sm">
+    <span id="pipe-dot" class="w-2.5 h-2.5 rounded-full {{ 'bg-amber-400 pulse-dot' if pipeline.running else 'bg-slate-500' }}"></span>
+    <span class="text-slate-300">{{ t(request, 'dash_pipeline', default='Pipeline') }}:</span>
+    <span id="pipe-phase" class="text-white font-medium">{{ pipeline.phase }}{% if pipeline.group %} — {{ pipeline.group }}{% endif %}</span>
+    <span id="pipe-error" class="text-rose-400 text-xs ml-auto">{{ pipeline.last_error }}</span>
 </div>
 
-<!-- Fetch Control -->
-<div class="glass rounded-2xl p-6 mb-8 glow-accent">
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-            <h2 class="text-xl font-semibold text-white flex items-center gap-3">
-                {{ t(request, 'dash_fetcher', default='Subscription Fetcher') }}
-                {% if fetch_status.running %}
-                <span class="flex items-center gap-2 text-sm font-normal text-amber-400">
-                    <span class="w-2 h-2 rounded-full bg-amber-400 pulse-dot"></span>
-                    {{ t(request, 'dash_fetching', default='Fetching…') }}
-                </span>
-                {% else %}
-                <span class="flex items-center gap-2 text-sm font-normal text-slate-500">
-                    <span class="w-2 h-2 rounded-full bg-slate-500"></span>
-                    {{ t(request, 'dash_idle', default='Idle') }}
-                </span>
-                {% endif %}
-            </h2>
-            <p class="text-sm text-slate-400 mt-1">{{ t(request, 'dash_fetch_desc', default='Fetch all subscriptions → deduplicate → store raw proxies → workers test them') }}</p>
-        </div>
-        <form method="POST" action="/fetch-subs">
-            <button type="submit" id="btn-fetch"
-                class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2 {% if fetch_status.running %}opacity-50 cursor-not-allowed{% endif %}"
-                {% if fetch_status.running %}disabled{% endif %}>
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                {{ t(request, 'dash_fetch_now') }}
-            </button>
-        </form>
-    </div>
-
-    <!-- Progress -->
-    <div id="progress-section" class="mt-6 {% if not fetch_status.running %}hidden{% endif %}">
-        <div class="flex items-center justify-between text-sm mb-2">
-            <span class="text-slate-400">{{ t(request, 'dash_phase', default='Phase:') }} <span id="fetch-phase" class="text-white font-medium">{{ fetch_status.current_phase }}</span></span>
-            <span class="text-slate-400">{{ t(request, 'dash_proxies_found', default='Proxies found:') }} <span id="fetch-proxies" class="text-emerald-400 font-semibold">{{ fetch_status.fetched_proxies }}</span></span>
-        </div>
-        <div class="w-full h-2 bg-slate-700/50 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
-                style="width: {% if fetch_status.running %}50{% else %}0{% endif %}%"></div>
-        </div>
-    </div>
+<div class="glass rounded-2xl overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="border-b border-slate-700/30 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                <th class="text-left px-5 py-4">{{ t(request, 'dash_group', default='Group / webhook') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'nav_nodes') }}</th>
+                <th class="text-right px-4 py-4">{{ t(request, 'ratings_sources', default='Sources') }}</th>
+                <th class="text-right px-4 py-4">{{ t(request, 'ratings_pool', default='Pool / valid') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'ratings_last_fetch', default='Last fetch') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'dash_next_fetch', default='Next fetch') }}</th>
+                <th class="px-4 py-4"></th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-700/20">
+            {% for row in groups %}
+            {% set g = row.group %}
+            <tr class="table-row align-top">
+                <td class="px-5 py-4">
+                    <div class="text-white font-semibold">{{ g.name }}</div>
+                    <button onclick="copyText('{{ request.base_url }}{{ g.webhook_path }}', this)" class="text-xs font-mono text-indigo-400 hover:text-indigo-300 break-all text-left">{{ request.base_url }}{{ g.webhook_path }}</button>
+                </td>
+                <td class="px-4 py-4">
+                    {% for n in row.nodes %}<span class="inline-flex items-center gap-1 mr-2 text-xs text-slate-300"><span class="w-1.5 h-1.5 rounded-full {{ 'bg-emerald-500' if n.online else 'bg-rose-500' }}"></span>{{ n.name }}</span>{% else %}<span class="text-xs text-amber-400">{{ t(request, 'dash_no_nodes', default='no nodes') }}</span>{% endfor %}
+                </td>
+                <td class="px-4 py-4 text-right text-slate-300">{{ row.sources }}</td>
+                <td class="px-4 py-4 text-right"><span class="text-slate-300">{{ g.pool_size }}</span> / <span class="text-emerald-400 font-semibold">{{ row.valid }}</span></td>
+                <td class="px-4 py-4 text-xs text-slate-400">
+                    {% if g.last_fetch_at %}<div class="local-time" data-ts="{{ g.last_fetch_at }}"></div>{% endif %}
+                    <div class="text-slate-500">{{ g.last_fetch_status }}</div>
+                </td>
+                <td class="px-4 py-4 text-xs text-slate-400">
+                    {% if row.next_fetch %}<span class="local-time" data-ts="{{ row.next_fetch }}"></span>{% else %}{{ t(request, 'ratings_manual', default='Manual') }}{% endif %}
+                </td>
+                <td class="px-4 py-4">
+                    <form method="POST" action="/ratings/{{ g.id }}/fetch">
+                        <button type="submit" class="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-cyan-400">{{ t(request, 'ratings_fetch_now', default='Fetch now') }}</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="px-5 py-10 text-center text-slate-500">{{ t(request, 'ratings_none_desc', default='Nodes without a group stay idle. Create a group to start testing.') }} <a href="/ratings" class="text-indigo-400 underline">{{ t(request, 'nav_ratings', default='Ratings') }}</a></td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </div>
 
-<!-- Proxy Distribution (worker results) -->
-<div class="glass rounded-2xl p-6 mb-8">
-    <h2 class="text-lg font-semibold text-white mb-1">{{ t(request, 'dash_proxy_dist', default='Proxy Distribution') }}</h2>
-    <p class="text-sm text-slate-400 mb-5">{{ t(request, 'dash_proxy_dist_desc', default='Subscriptions for VPN clients. Data is formed from worker test results.') }}</p>
-
-    <div class="space-y-4">
-        <!-- Main webhook -->
-        <div class="flex items-center gap-3">
-            <span class="text-xs font-semibold text-indigo-400 w-16 flex-shrink-0">{{ t(request, 'dash_main_hook', default='Main') }}</span>
-            <code id="webhook-url" class="flex-1 px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-indigo-400 text-sm font-mono truncate">
-                {{ request.url.scheme }}://{{ request.url.netloc }}/{{ settings.webhook_secret_path }}
-            </code>
-            <button id="btn-copy-main" onclick="copyToClipboard('webhook-url', this)"
-                class="px-3 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/20 text-slate-300 hover:text-white hover:border-indigo-500/30 transition-all text-xs">
-                {{ t(request, 'dash_copy', default='Copy') }}
-            </button>
-        </div>
-    </div>
-
-    <p class="text-xs text-slate-500 mt-4">Ranked by number of confirming nodes (desc), then by speed score (desc).</p>
-
-    <script>
-    function copyToClipboard(elementId, btn) {
-        var text = document.getElementById(elementId).textContent.trim();
-        var origText = btn.textContent;
-
-        function onSuccess() {
-            btn.textContent = '✓';
-            btn.classList.add('text-emerald-400');
-            setTimeout(function() {
-                btn.textContent = origText;
-                btn.classList.remove('text-emerald-400');
-            }, 1500);
-        }
-
-        // Try modern clipboard API first
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(onSuccess).catch(function() {
-                fallbackCopy(text, onSuccess);
-            });
-        } else {
-            fallbackCopy(text, onSuccess);
-        }
-    }
-
-    function fallbackCopy(text, onSuccess) {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try {
-            document.execCommand('copy');
-            onSuccess();
-        } catch(e) { /* silent */ }
-        document.body.removeChild(ta);
-    }
-    </script>
-</div>
-
-<!-- AJAX polling for fetch progress + scheduler status -->
 <script>
-(function() {
-    let polling = null;
-
-    function formatNextRun(isoStr) {
-        if (!isoStr) return '';
-        try {
-            const d = new Date(isoStr);
-            const now = new Date();
-            const diffMs = d - now;
-            if (diffMs <= 0) return 'Starting soon…';
-            const mins = Math.ceil(diffMs / 60000);
-            if (mins < 60) return 'Next fetch in ' + mins + ' min';
-            const hrs = Math.floor(mins / 60);
-            const remMins = mins % 60;
-            return 'Next fetch in ' + hrs + 'h ' + remMins + 'm';
-        } catch(e) { return ''; }
-    }
-
-    function updateStatus() {
-        fetch('/api/fetch-status')
-            .then(r => r.json())
-            .then(data => {
-                const section = document.getElementById('progress-section');
-                const phase = document.getElementById('fetch-phase');
-                const proxies = document.getElementById('fetch-proxies');
-                const bar = document.getElementById('progress-bar');
-                const btn = document.getElementById('btn-fetch');
-
-                if (data.running) {
-                    section.classList.remove('hidden');
-                    btn.disabled = true;
-                    btn.classList.add('opacity-50', 'cursor-not-allowed');
-                    if (data.current_phase === 'fetching') {
-                        bar.style.width = '50%';
-                    } else if (data.current_phase === 'saving') {
-                        bar.style.width = '80%';
-                    }
-                } else {
-                    btn.disabled = false;
-                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                    if (data.current_phase === 'done') {
-                        bar.style.width = '100%';
-                        // Fetch completed — reload to refresh stats cards
-                        setTimeout(() => window.location.reload(), 1500);
-                    }
-                    if (data.current_phase === 'error') {
-                        bar.style.width = '0%';
-                        section.classList.add('hidden');
-                    }
-                }
-
-                phase.textContent = data.current_phase;
-                proxies.textContent = data.fetched_proxies;
-
-                // Update scheduler info
-                if (data.scheduler) {
-                    const sNext = document.getElementById('scheduler-next');
-                    const sBadge = document.getElementById('scheduler-badge');
-                    if (data.scheduler.enabled) {
-                        sBadge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 border border-cyan-500/20';
-                        sBadge.textContent = 'Every ' + data.scheduler.interval_minutes + ' min';
-                        sNext.innerHTML = formatNextRun(data.scheduler.next_run_at);
-                    } else {
-                        sBadge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-400 border border-slate-500/20';
-                        sBadge.textContent = 'Disabled';
-                        sNext.innerHTML = 'Enable in <a href="/settings" class="text-indigo-400 hover:text-indigo-300 underline">Settings</a> to auto-fetch subscriptions.';
-                    }
-                }
-            })
-            .catch(() => {});
-    }
-
-    polling = setInterval(updateStatus, 5000);
-
-    {% if fetch_status.running %}
-    if (polling) clearInterval(polling);
-    polling = setInterval(updateStatus, 1500);
-    {% endif %}
-
-    const form = document.querySelector('form[action="/fetch-subs"]');
-    if (form) {
-        form.addEventListener('submit', () => {
-            setTimeout(() => {
-                if (polling) clearInterval(polling);
-                polling = setInterval(updateStatus, 1500);
-            }, 500);
-        });
-    }
-})();
+document.querySelectorAll('.local-time').forEach(el => {
+    const d = new Date(el.dataset.ts);
+    if (!isNaN(d)) el.textContent = d.toLocaleString();
+});
+function copyText(text, el) {
+    const done = () => { const o = el.style.color; el.style.color = '#34d399'; setTimeout(() => el.style.color = o, 1200); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done);
+    else { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+           try { document.execCommand('copy'); done(); } catch (e) {} document.body.removeChild(ta); }
+}
+setInterval(() => {
+    fetch('/api/fetch-status').then(r => r.ok ? r.json() : null).then(d => {
+        if (!d) return;
+        document.getElementById('pipe-phase').textContent = d.phase + (d.group ? ' — ' + d.group : '');
+        document.getElementById('pipe-error').textContent = d.last_error || '';
+        document.getElementById('pipe-dot').className = 'w-2.5 h-2.5 rounded-full ' + (d.running ? 'bg-amber-400 pulse-dot' : 'bg-slate-500');
+    }).catch(() => {});
+}, 10000);
 </script>
 {% endblock %}

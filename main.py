@@ -1,2267 +1,707 @@
-"""VPN Checker — FastAPI main application (Manager-only mode).
+"""VPN Checker — manager panel.
 
-The master panel does NOT run any proxy tests. It serves as a manager:
-- Fetches subscriptions and stores raw proxy URLs
-- Distributes raw proxies to worker nodes for testing
-- Aggregates results from nodes
-- Serves webhook with best proxies from node results
+The panel tests nothing itself. Each rating group is a pipeline: the group's
+sources are fetched on its schedule, its pool goes to its worker nodes, and
+their results form the group's webhook.
+
+Handlers that touch SQLite are plain ``def`` (run in the threadpool) or hand
+their work to ``run_in_threadpool`` — the single uvicorn process must never
+block its event loop.
 """
-
-import time as _time
-
-class TokenAuthMiddleware:
-    def __init__(self, asgi_app, token_field: str):
-        self.asgi_app = asgi_app
-        self.token_field = token_field
-        self._cached_token: str | None = None
-        self._cached_ts: float = 0.0
-        self._cache_ttl: float = 60.0
-
-    def _load_token(self) -> str:
-        """Read the token from settings. Blocking — called via run_in_threadpool."""
-        with Session(engine) as session:
-            s = session.exec(select(Settings)).first()
-            return getattr(s, self.token_field, "") if s else ""
-
-    async def _get_expected_token(self) -> str:
-        now = _time.monotonic()
-        if self._cached_token is None or (now - self._cached_ts) > self._cache_ttl:
-            self._cached_token = await run_in_threadpool(self._load_token)
-            self._cached_ts = now
-        return self._cached_token or ""
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] not in ("http", "websocket"):
-            return await self.asgi_app(scope, receive, send)
-
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
-        token = ""
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-
-        expected_token = await self._get_expected_token()
-
-        if not expected_token or token != expected_token:
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [(b"content-type", b"text/plain")],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b"Unauthorized",
-            })
-            return
-
-        return await self.asgi_app(scope, receive, send)
+from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
+import re
 import secrets
-import hashlib
-import uuid
-from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+import time
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Form, HTTPException, Header, BackgroundTasks, Query
-from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlmodel import Session, select, func, delete
-from sqlalchemy import text, or_, case
-from sqlalchemy.exc import OperationalError
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, text
+from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
-import database
 import db_maintenance
+import node_api
+import pipeline
+import rating
+from auth import SESSION_COOKIE, SESSION_MAX_AGE, create_session_token, get_current_user, hash_password, verify_password
 from database import (
-    create_db_and_tables,
-    engine,
-    Subscription,
-    RawProxy,
-    Settings,
-    TestUrl,
-    Node,
-    NodeProxyResult,
-    RatingGroup,
-    NodeRatingLink,
+    Session,
+    DB_PATH, PROTOCOLS, GroupSource, Node, NodeRatingLink, RatingGroup, Settings,
+    Subscription, TestUrl, create_db_and_tables, effective_generation, engine, utcnow,
 )
-from auth import (
-    hash_password,
-    verify_password,
-    create_session_token,
-    get_current_user,
-    SESSION_COOKIE,
-)
-from subs_manager import fetch_and_parse_subscriptions_sync
-from database import SubscriptionTestStat  # [SUB-STATS]
-from database import NodeProxyState  # [NODE-BAN]
-from scheduler import (
-    start_scheduler,
-    scheduler_status,
-    load_state,
-    build_final_proxies,
-    store_raw_proxies,
-)
+from i18n import translations
 from log_buffer import log_buffer, setup_log_buffer
-from proxy_parsers import replace_proxy_remark, get_proxy_identity
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("vpn_checker")
 
+RESERVED_PATHS = {"", "login", "logout", "subscriptions", "test-urls", "settings", "ratings", "logs", "nodes",
+                  "api", "mcp", "static", "fetch-subs", "favicon.ico", "robots.txt"}
+WEBHOOK_PATH_RE = re.compile(r"^[A-Za-z0-9._~-]{1,100}$")
+PROTOCOL_LABELS = {"vless": "VLESS", "vmess": "VMess", "trojan": "Trojan", "ss": "Shadowsocks",
+                   "hy2": "Hysteria2 (hy2://)", "hysteria2": "Hysteria2 (hysteria2://)", "tuic": "TUIC",
+                   "hysteria": "Hysteria v1", "anytls": "AnyTLS", "socks": "SOCKS5"}
 
-async def _db(fn, *args, **kwargs):
-    """Run a blocking DB function in the threadpool.
-
-    The panel is a single-process uvicorn app, so a synchronous SQLite call
-    inside an async handler stalls the whole event loop (TCP connects succeed,
-    HTTP never answers). All non-trivial DB work goes through here.
-    """
-    return await run_in_threadpool(fn, *args, **kwargs)
-
-
-# SQLite file path derived from DATABASE_URL (kept in sync with scheduler/maintenance)
-_DB_FILE = database.DATABASE_URL.replace("sqlite:///", "").replace("./", "")
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-app = FastAPI(title="VPN Checker", version="3.0.0")
-
-try:
-    from starlette.routing import Mount
-    from mcp_server import mcp_ro, mcp_admin
-
-    mcp_ro_app = mcp_ro.http_app(transport="sse")
-    auth_ro_app = TokenAuthMiddleware(mcp_ro_app, "mcp_read_token")
-    
-    mcp_admin_app = mcp_admin.http_app(transport="sse")
-    auth_admin_app = TokenAuthMiddleware(mcp_admin_app, "mcp_admin_token")
-    
-    app.router.routes.insert(0, Mount("/mcp/admin", auth_admin_app))
-    app.router.routes.insert(0, Mount("/mcp/read", auth_ro_app))
-    logger.info("Mounted MCP endpoints: /mcp/read, /mcp/admin")
-except ImportError as e:
-    logger.warning(f"Failed to mount MCP servers: {e}")
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-from i18n import translations
-
-def t(request: Request, key: str, **kwargs):
-    lang = request.cookies.get("lang", "en")
-    if lang not in translations:
-        lang = "en"
-    
-    default_text = kwargs.pop("default", key)
-    text = translations[lang].get(key, default_text)
-    
-    if kwargs:
-        text = text.format(**kwargs)
-    return text
-
-templates.env.globals["t"] = t
-
-# Global fetch status (replaces test_status)
-fetch_status = {
-    "running": False,
-    "current_phase": "idle",  # idle | fetching | saving | done | error
-    "total_subs": 0,
-    "fetched_proxies": 0,
-    "last_fetch_at": None,
-}
-
-# ---------------------------------------------------------------------------
-# All default subscription URLs
-# ---------------------------------------------------------------------------
 DEFAULT_SUBSCRIPTIONS = [
-    # === GitVerse RUVIPIEN/russian-white-bolt ===
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_3_b4689a.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_1_f7c635.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Goida_Config_26_9d0474.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Sevcator_VLESS_ffd7b3.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_VLESS_Clean_fa7d47.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_Trojan_Clean_f30cdf.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_VMess_Clean_94367a.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Kort_SS_Clean_2a8980.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/OpenRay_All_Proxies_39ce9f.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Bypass_Config_7_d33b54.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Vify_VLESS_7f9765.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Yitong_V2Ray_11218f.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/BLACK_VLESS_RUS_11add6.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/BLACK_SS_All_316a8b.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/VLESS_Reality_White_3eac2d.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/V2RayRoot_VLESS_feed6f.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_e52883.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_WL_35806c.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_Available_ST_7ad618.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/WhitePrime_WL_ST_587e43.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Xray_Mix_URI_c4598b.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/SilentGhost_Blacklist_676750.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Roosterkid_V2Ray_2e2cfa.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/Pawdroid_Free_Servers_6d71e8.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/MahsaNet_Xray_Final_1f5ce9.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_Sub_All_946555.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_VLESS_9c1e9a.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_VLESS_Warp_d9ad39.txt",
-    "https://gitverse.ru/api/repos/RUVIPIEN/russian-white-bolt/raw/branch/master/VPNMIRRORS/v2ray/AlexanderY_EdikRU_ae94d8.txt",
-    # === Russian community (GitHub) ===
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
-    "https://raw.githubusercontent.com/ByeWhiteLists/ByeWhiteLists2/refs/heads/main/ByeWhiteLists2.txt",
-    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Whitelist.txt",
-    "https://raw.githubusercontent.com/SilentGhostCodes/WhiteListVpn/refs/heads/main/Whitelist%20%E2%84%962.txt",
-    "https://raw.githubusercontent.com/WhitePrime/xraycheck/refs/heads/main/configs/available",
     "https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt",
-    # === Iranian aggregators ===
     "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/main/vless_configs.txt",
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/Splitted-By-Protocol/vless.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/Splitted-By-Protocol/vless.txt",
-    "https://raw.githubusercontent.com/shabane/kamaji/master/hub/vless",
-    "https://raw.githubusercontent.com/Bardiafa/Free-V2ray-Config/main/Splitted-By-Protocol/vless.txt",
-    # === Mixed protocol aggregators ===
-    "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity",
-    "https://raw.githubusercontent.com/w1770946466/Auto_proxy/main/Long_term_subscription_num",
-    "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray",
-    "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
-    "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
-    "https://raw.githubusercontent.com/LalatinaHub/Mineral/master/result/nodes",
     "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
-    "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
-    # === CDN subscription ===
-    "https://etoneya.a9fm.site/1",
+]
+DEFAULT_TEST_URLS = [
+    ("https://www.gstatic.com/generate_204", 204, 0),
+    ("https://www.google.com", 200, 1000),
+    ("https://www.youtube.com/generate_204", 204, 0),
 ]
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# startup / shutdown
 # ---------------------------------------------------------------------------
-@app.on_event("startup")
-async def on_startup():
+def _seed_defaults() -> None:
+    with Session(engine) as s:
+        if s.exec(select(Settings)).first():
+            return
+        s.add(Settings(admin_pass_hash=hash_password("admin"), node_api_token=secrets.token_hex(16)))
+        for i, (url, status, min_b) in enumerate(DEFAULT_TEST_URLS):
+            s.add(TestUrl(url=url, expect_status=status, min_body_bytes=min_b, position=i))
+        subs = [Subscription(url=u) for u in DEFAULT_SUBSCRIPTIONS]
+        s.add_all(subs)
+        group = RatingGroup(name="default", webhook_path=secrets.token_urlsafe(12), schedule_interval_minutes=360)
+        s.add(group)
+        s.flush()
+        for sub in subs:
+            s.add(GroupSource(group_id=group.id, subscription_id=sub.id))
+        s.commit()
+        logger.warning("First start: created settings (password 'admin' — change it), "
+                       "default test URLs, sources and a 'default' rating group")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     setup_log_buffer()
-    create_db_and_tables()
-
-    # One-shot DB maintenance: drop duplicate indexes, delete orphan
-    # node_proxy_results, VACUUM. Runs synchronously before the app accepts
-    # connections (a bloated DB shrinks once, then this is a fast no-op).
+    await run_in_threadpool(create_db_and_tables)
+    await run_in_threadpool(_seed_defaults)
+    # VACUUM / index hygiene off the request path; the app serves meanwhile.
+    maintenance = asyncio.create_task(asyncio.to_thread(db_maintenance.run_maintenance, DB_PATH))
+    scheduler = asyncio.create_task(pipeline.scheduler_loop())
     try:
-        await _db(db_maintenance.run_maintenance, _DB_FILE)
-    except Exception as e:
-        logger.error(f"Startup DB maintenance failed: {e}", exc_info=True)
-
-    # Clean up stale node results from previous runs
-    with Session(engine) as session:
-        cleanup_stats = _cleanup_stale_node_data(session)
-        if any(v for k, v in cleanup_stats.items() if k != "online_ids" and v > 0):
-            logger.info(
-                f"Startup cleanup: stale_marked={cleanup_stats['stale_marked']} "
-                f"orphan_npr={cleanup_stats['orphan_npr_deleted']} "
-                f"online_nodes={len(cleanup_stats['online_ids'])}"
-            )
-
-    # Seed default settings if empty
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if not settings:
-            settings = Settings(
-                admin_pass_hash=hash_password("admin"),
-                ping_threshold_ms=1000,
-                webhook_secret_path="secret-distrib",
-                concurrent_checks_limit=50,
-                schedule_interval_minutes=0,
-                webhook_max_proxies=0,
-                http_timeout_s=10,
-                speed_test_top_n=0,
-                node_api_token=secrets.token_hex(16),
-                node_check_top_n=50,
-                ban_duration_hours=168,
-
-                ban_after_n_failures=3,
-            )
-            session.add(settings)
-
-            # Default strict URL tests for Russia (DPI bypass)
-            default_urls = [
-                ("https://www.instagram.com/favicon.ico", 200, 100),
-                ("https://x.com/favicon.ico", 200, 100),
-                ("https://www.youtube.com/generate_204", 204, 0),
-                ("https://chatgpt.com/favicon.ico", 200, 100),
-                ("https://rutracker.org/favicon.ico", 200, 100),
-            ]
-            for i, (url, status, min_b) in enumerate(default_urls, start=1):
-                tu = TestUrl(url=url, expect_status=status, min_body_bytes=min_b, position=i)
-                session.add(tu)
-
-            # Default subscriptions
-            for sub_url in DEFAULT_SUBSCRIPTIONS:
-                session.add(Subscription(url=sub_url))
-
-            session.commit()
-            logger.info("Created default settings, test URLs, and subscriptions")
-
-    start_scheduler()
+        yield
+    finally:
+        scheduler.cancel()
+        maintenance.cancel()
 
 
-# ---------------------------------------------------------------------------
-# Auth helpers
-# ---------------------------------------------------------------------------
-def _require_login(request: Request):
+app = FastAPI(title="VPN Checker", version="4.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+
+def t(request: Request, key: str, **kwargs) -> str:
+    lang = request.cookies.get("lang", "en")
+    table = translations.get(lang) or translations["en"]
+    default = kwargs.pop("default", None)
+    value = table.get(key) or translations["en"].get(key) or default or key
+    return value.format(**kwargs) if kwargs else value
+
+
+templates.env.globals["t"] = t
+
+
+class _LoginRequired(Exception):
+    pass
+
+
+@app.exception_handler(_LoginRequired)
+async def _login_redirect(request: Request, exc: _LoginRequired):
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
+
+
+def _user(request: Request) -> str:
     user = get_current_user(request)
     if not user:
-        raise HTTPException(status_code=302, headers={"Location": "/login"})
+        raise _LoginRequired()
     return user
 
 
+def _page(request: Request, name: str, ctx: dict, status_code: int = 200):
+    return templates.TemplateResponse(request, name, ctx, status_code=status_code)
+
+
+def _int(form, key: str, default: int = 0, lo: int | None = None, hi: int | None = None) -> int:
+    try:
+        v = int(str(form.get(key, default)).strip() or default)
+    except ValueError:
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
 # ---------------------------------------------------------------------------
-# LOGIN
+# MCP (token-protected SSE apps)
+# ---------------------------------------------------------------------------
+class TokenAuthMiddleware:
+    def __init__(self, asgi_app, token_field: str):
+        self.asgi_app = asgi_app
+        self.token_field = token_field
+        self._token: str | None = None
+        self._at = 0.0
+
+    def _load(self) -> str:
+        with Session(engine) as s:
+            st = s.exec(select(Settings)).first()
+            return (getattr(st, self.token_field, "") if st else "") or ""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.asgi_app(scope, receive, send)
+        if self._token is None or time.monotonic() - self._at > 60:
+            self._token, self._at = await run_in_threadpool(self._load), time.monotonic()
+        auth = dict(scope.get("headers", [])).get(b"authorization", b"").decode()
+        if not self._token or not secrets.compare_digest(auth, f"Bearer {self._token}"):
+            await send({"type": "http.response.start", "status": 401, "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"Unauthorized"})
+            return
+        return await self.asgi_app(scope, receive, send)
+
+
+try:
+    from starlette.routing import Mount
+
+    from mcp_server import mcp_admin, mcp_ro
+
+    app.router.routes.insert(0, Mount("/mcp/admin", TokenAuthMiddleware(mcp_admin.http_app(transport="sse"), "mcp_admin_token")))
+    app.router.routes.insert(0, Mount("/mcp/read", TokenAuthMiddleware(mcp_ro.http_app(transport="sse"), "mcp_read_token")))
+except ImportError as e:
+    logger.warning(f"MCP endpoints disabled: {e}")
+
+app.include_router(node_api.router)
+
+
+# ---------------------------------------------------------------------------
+# login
 # ---------------------------------------------------------------------------
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    user = get_current_user(request)
-    if user:
+def login_page(request: Request):
+    if get_current_user(request):
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+    return _page(request, "login.html", {"error": None})
 
 
 @app.post("/login", response_class=HTMLResponse)
-async def login_submit(request: Request, password: str = Form(...)):
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-    if settings and verify_password(password, settings.admin_pass_hash):
-        token = create_session_token("admin")
+def login_submit(request: Request, password: str = Form(...)):
+    with Session(engine) as s:
+        st = s.exec(select(Settings)).first()
+    if st and verify_password(password, st.admin_pass_hash):
         resp = RedirectResponse("/", status_code=302)
-        resp.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=86400)
+        resp.set_cookie(SESSION_COOKIE, create_session_token("admin"), httponly=True, samesite="lax",
+                        max_age=SESSION_MAX_AGE)
         return resp
-    return templates.TemplateResponse(request, "login.html", {"error": "Wrong password"}, status_code=401)
+    time.sleep(1)  # slows down guessing (runs in the threadpool)
+    return _page(request, "login.html", {"error": "Wrong password"}, status_code=401)
 
 
 @app.get("/logout")
-async def logout():
+def logout():
     resp = RedirectResponse("/login", status_code=302)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
 
 
 # ---------------------------------------------------------------------------
-# DASHBOARD
+# dashboard
 # ---------------------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    stats = await _db(_dashboard_stats)
-
-    return templates.TemplateResponse(request, "dashboard.html", {
-        "user": user,
-        "sub_count": stats["sub_count"],
-        "raw_proxy_count": stats["raw_proxy_count"],
-        "valid_proxy_count": stats["valid_proxy_count"],
-        "test_url_count": stats["test_url_count"],
-        "node_count": stats["node_count"],
-        "settings": stats["settings"],
-        "fetch_status": fetch_status,
-    })
-
-
-def _dashboard_stats() -> dict:
-    """Collect dashboard counters. Blocking — call via _db()."""
-    with Session(engine) as session:
-        sub_count = session.exec(select(func.count(Subscription.id))).one()
-        raw_proxy_count = session.exec(select(func.count(RawProxy.id))).one()
-        test_url_count = session.exec(select(func.count(TestUrl.id))).one()
-        node_count = session.exec(select(func.count(Node.id))).one()
-        settings = session.exec(select(Settings)).first()
-
-        # Count valid proxies from all nodes (unique by raw_url where tests_passed > 0)
-        valid_proxy_count = session.exec(
-            select(func.count(func.distinct(NodeProxyResult.raw_url)))
-            .where(NodeProxyResult.tests_passed > 0)
-        ).one()
-
-    return {
-        "sub_count": sub_count,
-        "raw_proxy_count": raw_proxy_count,
-        "valid_proxy_count": valid_proxy_count,
-        "test_url_count": test_url_count,
-        "node_count": node_count,
-        "settings": settings,
-    }
-
-
-# ---------------------------------------------------------------------------
-# SUBSCRIPTIONS
-# ---------------------------------------------------------------------------
-# [SUB-STATS] сколько последних тестовых выборок источника учитываем в проценте
-SUB_STATS_SAMPLES = 5
-
-
-def _subscription_live_stats(limit: int = SUB_STATS_SAMPLES) -> dict[int, dict]:
-    """[SUB-STATS] Доля живых прокси источника за последние N выборок.
-
-    tested/alive суммируются по выборкам (агрегат, а не среднее процентов) — так
-    один прогон с 3000 конфигов не перевешивается прогоном с 10 конфигами.
-    percent = 100 * alive / tested с точностью до сотых.
-    """
-    out: dict[int, dict] = {}
-    with Session(engine) as stats_session:
-        rows = stats_session.exec(
-            select(SubscriptionTestStat).order_by(SubscriptionTestStat.id.desc())
-        ).all()
-    for r in rows:
-        agg = out.setdefault(r.subscription_id, {"tested": 0, "alive": 0, "samples": 0, "percent": None})
-        if agg["samples"] >= limit:
-            continue
-        agg["tested"] += r.tested
-        agg["alive"] += r.alive
-        agg["samples"] += 1
-    for agg in out.values():
-        agg["percent"] = round(100.0 * agg["alive"] / agg["tested"], 2) if agg["tested"] else None
+def _group_overview(s: Session) -> list[dict]:
+    groups = s.exec(select(RatingGroup).order_by(RatingGroup.id)).all()
+    links = s.exec(select(NodeRatingLink.rating_group_id, Node.name, Node.is_online)
+                   .join(Node, Node.id == NodeRatingLink.node_id)).all()
+    nodes_by_group: dict[int, list] = {}
+    for gid, name, online in links:
+        nodes_by_group.setdefault(gid, []).append({"name": name, "online": online})
+    src_counts = dict(s.exec(select(GroupSource.group_id, func.count(GroupSource.id))
+                             .group_by(GroupSource.group_id)).all())
+    out = []
+    for g in groups:
+        nxt = pipeline.next_fetch_at(g)
+        out.append({
+            "group": g, "nodes": nodes_by_group.get(g.id, []), "sources": src_counts.get(g.id, 0),
+            "valid": len(rating.get_rating(g.id)),
+            "next_fetch": nxt.isoformat() if nxt else "",
+        })
     return out
 
 
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        groups = _group_overview(s)
+        ctx = {
+            "user": user, "groups": groups,
+            "sub_count": s.exec(select(func.count(Subscription.id))).one(),
+            "test_url_count": s.exec(select(func.count(TestUrl.id))).one(),
+            "node_count": s.exec(select(func.count(Node.id))).one(),
+            "node_online": s.exec(select(func.count(Node.id)).where(Node.is_online == True)).one(),  # noqa: E712
+            "pool_total": sum(g["group"].pool_size for g in groups),
+            "valid_total": sum(g["valid"] for g in groups),
+            "pipeline": pipeline.status,
+        }
+    return _page(request, "dashboard.html", ctx)
+
+
+@app.post("/fetch-subs")
+def fetch_all(request: Request):
+    _user(request)
+    with Session(engine) as s:
+        gids = [g for (g,) in s.exec(text("SELECT id FROM rating_groups")).all()]
+    pipeline.request_cycle(gids, fetch=True)
+    return RedirectResponse(request.headers.get("referer") or "/", status_code=302)
+
+
+@app.get("/api/fetch-status")
+def api_fetch_status(request: Request):
+    _user(request)
+    with Session(engine) as s:
+        groups = [{"id": g.id, "name": g.name, "pool_size": g.pool_size, "last_fetch_at": g.last_fetch_at,
+                   "last_fetch_status": g.last_fetch_status,
+                   "next_fetch_at": (pipeline.next_fetch_at(g).isoformat() if pipeline.next_fetch_at(g) else None)}
+                  for g in s.exec(select(RatingGroup).order_by(RatingGroup.id)).all()]
+    return {**pipeline.status, "groups": groups}
+
+
+# ---------------------------------------------------------------------------
+# subscriptions (global source catalog)
+# ---------------------------------------------------------------------------
 @app.get("/subscriptions", response_class=HTMLResponse)
-async def subscriptions_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        subs = session.exec(select(Subscription).order_by(Subscription.id.desc())).all()
-    return templates.TemplateResponse(request, "subscriptions.html", {
-        "user": user,
-        "subs": subs,
-        "sub_stats": _subscription_live_stats(),
-    })
+def subscriptions_page(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        subs = s.exec(select(Subscription).order_by(Subscription.id.desc())).all()
+        groups = {g.id: g.name for g in s.exec(select(RatingGroup)).all()}
+        usage: dict[int, list[dict]] = {}
+        for gs in s.exec(select(GroupSource)).all():
+            usage.setdefault(gs.subscription_id, []).append(
+                {"name": groups.get(gs.group_id, "?"), "skipped": gs.stats_disabled})
+    return _page(request, "subscriptions.html", {"user": user, "subs": subs, "usage": usage})
 
 
 @app.post("/subscriptions/add")
-async def add_subscription(request: Request, url: str = Form(...)):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    url = url.strip()
-    if url:
-        with Session(engine) as session:
-            existing = session.exec(select(Subscription).where(Subscription.url == url)).first()
-            if not existing:
-                sub = Subscription(url=url)
-                session.add(sub)
-                session.commit()
+def add_subscription(request: Request, url: str = Form(...)):
+    _user(request)
+    urls = [u.strip() for u in re.split(r"[\s]+", url) if u.strip().startswith(("http://", "https://"))]
+    with Session(engine) as s:
+        for u in urls:
+            if s.exec(select(Subscription).where(Subscription.url == u)).first():
+                continue
+            sub = Subscription(url=u)
+            s.add(sub)
+            s.flush()
+            pipeline.add_source_to_auto_groups(s, sub.id)
+        s.commit()
     return RedirectResponse("/subscriptions", status_code=302)
 
 
 @app.post("/subscriptions/delete/{sub_id}")
-async def delete_subscription(request: Request, sub_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        sub = session.get(Subscription, sub_id)
+def delete_subscription(request: Request, sub_id: int):
+    _user(request)
+    with Session(engine) as s:
+        sub = s.get(Subscription, sub_id)
         if sub:
-            session.delete(sub)
-            session.commit()
+            gids = [g for (g,) in s.exec(text("SELECT group_id FROM group_sources WHERE subscription_id=:s")
+                                         .bindparams(s=sub_id)).all()]
+            pipeline.delete_source_data(s, sub_id)
+            s.delete(sub)
+            s.commit()
+            pipeline.request_cycle(gids, fetch=False)
     return RedirectResponse("/subscriptions", status_code=302)
 
 
 @app.post("/subscriptions/toggle/{sub_id}")
-async def toggle_subscription(request: Request, sub_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        sub = session.get(Subscription, sub_id)
+def toggle_subscription(request: Request, sub_id: int):
+    _user(request)
+    with Session(engine) as s:
+        sub = s.get(Subscription, sub_id)
         if sub:
             sub.is_enabled = not sub.is_enabled
-            session.add(sub)
-            session.commit()
+            s.add(sub)
+            s.commit()
+            gids = [g for (g,) in s.exec(text("SELECT group_id FROM group_sources WHERE subscription_id=:s")
+                                         .bindparams(s=sub_id)).all()]
+            pipeline.request_cycle(gids, fetch=False)
     return RedirectResponse("/subscriptions", status_code=302)
 
 
 # ---------------------------------------------------------------------------
-# TEST URLS
+# test URLs (shared by all groups)
 # ---------------------------------------------------------------------------
 @app.get("/test-urls", response_class=HTMLResponse)
-async def test_urls_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        urls = session.exec(select(TestUrl).order_by(TestUrl.position, TestUrl.id)).all()
-    return templates.TemplateResponse(request, "test_urls.html", {
-        "user": user,
-        "test_urls": urls,
-    })
+def test_urls_page(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        urls = s.exec(select(TestUrl).order_by(TestUrl.position, TestUrl.id)).all()
+    return _page(request, "test_urls.html", {"user": user, "test_urls": urls})
 
 
 @app.post("/test-urls/add")
-async def add_test_url(
-    request: Request,
-    url: str = Form(...),
-    expect_status: int = Form(200),
-    min_body_bytes: int = Form(100),
-):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
+def add_test_url(request: Request, url: str = Form(...), expect_status: int = Form(200),
+                 min_body_bytes: int = Form(100)):
+    _user(request)
     url = url.strip()
-    if url:
-        with Session(engine) as session:
-            existing = session.exec(select(TestUrl).where(TestUrl.url == url)).first()
-            if not existing:
-                max_pos = session.exec(select(func.max(TestUrl.position))).one()
-                pos = (max_pos or 0) + 1
-                tu = TestUrl(
-                    url=url,
-                    expect_status=expect_status,
-                    min_body_bytes=max(0, min_body_bytes),
-                    position=pos,
-                )
-                session.add(tu)
-                session.commit()
+    if url.startswith(("http://", "https://")):
+        with Session(engine) as s:
+            if not s.exec(select(TestUrl).where(TestUrl.url == url)).first():
+                pos = (s.exec(select(func.max(TestUrl.position))).one() or 0) + 1
+                s.add(TestUrl(url=url, expect_status=expect_status, min_body_bytes=max(0, min_body_bytes), position=pos))
+                s.commit()
     return RedirectResponse("/test-urls", status_code=302)
 
 
 @app.post("/test-urls/delete/{url_id}")
-async def delete_test_url(request: Request, url_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        tu = session.get(TestUrl, url_id)
+def delete_test_url(request: Request, url_id: int):
+    _user(request)
+    with Session(engine) as s:
+        tu = s.get(TestUrl, url_id)
         if tu:
-            session.delete(tu)
-            session.commit()
+            s.delete(tu)
+            s.commit()
     return RedirectResponse("/test-urls", status_code=302)
 
 
 # ---------------------------------------------------------------------------
-# SETTINGS
+# settings (panel-wide only; pipeline settings live in each rating group)
 # ---------------------------------------------------------------------------
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        # Parse enabled_protocols JSON for template rendering
-        enabled_protocols = {
-            "vless": True,
-            "vmess": True,
-            "trojan": True,
-            "ss": True,
-            "hy2": True,
-            "hysteria2": True,
-        }
-        if settings and settings.enabled_protocols:
-            try:
-                enabled_protocols = json.loads(settings.enabled_protocols)
-            except Exception:
-                pass
-    return templates.TemplateResponse(request, "settings.html", {
-        "user": user,
-        "settings": settings,
-        "saved": False,
-        "enabled_protocols": enabled_protocols,
-    })
+def settings_page(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        st = s.exec(select(Settings)).first()
+    return _page(request, "settings.html", {"user": user, "settings": st, "saved": request.query_params.get("saved")})
 
 
-@app.post("/settings", response_class=HTMLResponse)
-async def settings_save(
-    request: Request,
-    ping_threshold_ms: int = Form(...),
-    concurrent_checks_limit: int = Form(...),
-    schedule_interval_minutes: int = Form(0),
-    http_timeout_s: int = Form(10),
-    speed_test_top_n: int = Form(0),
-    node_check_top_n: int = Form(50),
-    global_sub_top_n: int = Form(50),
-    ban_duration_hours: int = Form(168),
-
-    ban_after_n_failures: int = Form(3),
-    good_proxy_retention_cycles: int = Form(3),
-    chunk_size: int = Form(0),
-
-    # Protocol filter checkboxes
-    proto_vless: int = Form(0),
-    proto_vmess: int = Form(0),
-    proto_trojan: int = Form(0),
-    proto_ss: int = Form(0),
-    proto_hy2: int = Form(0),
-    proto_hysteria2: int = Form(0),
-
-    # Geo check toggle
-
-    new_password: str = Form(""),
-):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    # Build enabled_protocols JSON
-    enabled_protocols = {
-        "vless": bool(proto_vless),
-        "vmess": bool(proto_vmess),
-        "trojan": bool(proto_trojan),
-        "ss": bool(proto_ss),
-        "hy2": bool(proto_hy2),
-        "hysteria2": bool(proto_hysteria2),
-    }
-    enabled_protocols_json = json.dumps(enabled_protocols)
-
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if settings:
-            settings.ping_threshold_ms = ping_threshold_ms
-            settings.concurrent_checks_limit = concurrent_checks_limit
-            settings.schedule_interval_minutes = max(0, schedule_interval_minutes)
-            settings.http_timeout_s = max(1, http_timeout_s)
-            settings.speed_test_top_n = max(0, speed_test_top_n)
-            settings.node_check_top_n = max(0, node_check_top_n)
-            settings.global_sub_top_n = max(0, global_sub_top_n)
-
-            settings.ban_duration_hours = max(0, ban_duration_hours)
-            settings.ban_after_n_failures = max(1, ban_after_n_failures)
-            settings.good_proxy_retention_cycles = max(0, good_proxy_retention_cycles)
-            settings.chunk_size = max(0, chunk_size)
-            settings.enabled_protocols = enabled_protocols_json
-
-            if new_password.strip():
-                settings.admin_pass_hash = hash_password(new_password.strip())
-            session.add(settings)
-            session.commit()
-            session.refresh(settings)
-
-    # Re-parse for template rendering
-    return templates.TemplateResponse(request, "settings.html", {
-        "user": user,
-        "settings": settings,
-        "saved": True,
-        "enabled_protocols": enabled_protocols,
-    })
+@app.post("/settings")
+def settings_save(request: Request, node_log_level: str = Form("info"), new_password: str = Form("")):
+    _user(request)
+    with Session(engine) as s:
+        st = s.exec(select(Settings)).first()
+        if node_log_level in ("debug", "info", "warning", "error", "off"):
+            st.node_log_level = node_log_level
+        if new_password.strip():
+            st.admin_pass_hash = hash_password(new_password.strip())
+        s.add(st)
+        s.commit()
+    return RedirectResponse("/settings?saved=1", status_code=302)
 
 
-@app.post("/settings/regenerate-node-token")
-async def regenerate_node_token(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if settings:
-            settings.node_api_token = secrets.token_hex(16)
-            session.add(settings)
-            session.commit()
-            invalidate_node_token_cache()
-    return RedirectResponse("/settings", status_code=302)
-
-
-@app.post("/settings/regenerate-mcp-read-token")
-async def regenerate_mcp_read_token(request: Request):
-    """Regenerate the read-only MCP token (used by AI agents for read access)."""
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if settings:
-            settings.mcp_read_token = secrets.token_urlsafe(32)
-            session.add(settings)
-            session.commit()
-    # TokenAuthMiddleware re-reads the token from settings with a 60s TTL,
-    # so the new value becomes effective within a minute without a restart.
-    return RedirectResponse("/settings", status_code=302)
-
-
-@app.post("/settings/regenerate-mcp-admin-token")
-async def regenerate_mcp_admin_token(request: Request):
-    """Regenerate the admin MCP token (full control over the panel via MCP)."""
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if settings:
-            settings.mcp_admin_token = secrets.token_urlsafe(32)
-            session.add(settings)
-            session.commit()
+@app.post("/settings/regenerate-{which}")
+def regenerate_token(request: Request, which: str):
+    _user(request)
+    field = {"node-token": "node_api_token", "mcp-read-token": "mcp_read_token",
+             "mcp-admin-token": "mcp_admin_token"}.get(which)
+    if not field:
+        raise HTTPException(status_code=404)
+    with Session(engine) as s:
+        st = s.exec(select(Settings)).first()
+        setattr(st, field, secrets.token_hex(16) if field == "node_api_token" else secrets.token_urlsafe(32))
+        s.add(st)
+        s.commit()
+    node_api.invalidate_token_cache()
     return RedirectResponse("/settings", status_code=302)
 
 
 # ---------------------------------------------------------------------------
-# RATINGS GROUPS
+# rating groups
 # ---------------------------------------------------------------------------
+def _group_payload(g: RatingGroup, source_ids: list[int]) -> dict:
+    """Everything the edit form needs, as JSON for the page script."""
+    data = g.model_dump(exclude={"generation_id", "generation_at", "last_fetch_status", "created_at"})
+    data["protocols"] = g.protocols()
+    data["source_ids"] = source_ids
+    return data
+
+
 @app.get("/ratings", response_class=HTMLResponse)
-async def ratings_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    with Session(engine) as session:
-        ratings = session.exec(select(RatingGroup).order_by(RatingGroup.id)).all()
-        nodes = session.exec(select(Node).order_by(Node.id)).all()
-        
-        # Build mapping: rating_group_id -> list of node_ids
-        links = session.exec(select(NodeRatingLink)).all()
-        rating_nodes_map = defaultdict(list)
-        for link in links:
-            rating_nodes_map[link.rating_group_id].append(link.node_id)
-            
-    return templates.TemplateResponse(request, "ratings.html", {
-        "user": user,
-        "ratings": ratings,
-        "nodes": nodes,
-        "rating_nodes_map": dict(rating_nodes_map),
+def ratings_page(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        groups = s.exec(select(RatingGroup).order_by(RatingGroup.id)).all()
+        nodes = s.exec(select(Node).order_by(Node.id)).all()
+        subs = s.exec(select(Subscription).order_by(Subscription.id)).all()
+        rating_nodes: dict[int, list[int]] = {}
+        for link in s.exec(select(NodeRatingLink)).all():
+            rating_nodes.setdefault(link.rating_group_id, []).append(link.node_id)
+        group_sources: dict[int, dict[int, GroupSource]] = {}
+        for gs in s.exec(select(GroupSource)).all():
+            group_sources.setdefault(gs.group_id, {})[gs.subscription_id] = gs
+        cards = []
+        for g in groups:
+            nxt = pipeline.next_fetch_at(g)
+            selected = group_sources.get(g.id, {})
+            cards.append({
+                "group": g,
+                "payload": _group_payload(g, sorted(selected)),
+                "sources_selected": len(selected),
+                "sources_skipped": sum(1 for gs in selected.values() if gs.stats_disabled),
+                "valid": len(rating.get_rating(g.id)),
+                "next_fetch": nxt.isoformat() if nxt else "",
+            })
+    return _page(request, "ratings.html", {
+        "user": user, "cards": cards, "nodes": nodes, "subs": subs, "rating_nodes_map": rating_nodes,
+        "protocol_labels": PROTOCOL_LABELS, "error": request.query_params.get("error"),
+        "new_group_defaults": _group_payload(RatingGroup(), [sub.id for sub in subs]),
     })
 
-@app.post("/ratings/add")
-async def add_rating(
-    request: Request,
-    name: str = Form(...),
-    webhook_path: str = Form(...),
-    max_proxies: int = Form(0),
-    min_dl_kbps: int = Form(0),
-    min_ul_kbps: int = Form(0),
-    rename_prefix: str = Form(""),
-    consensus_only: int = Form(0),
-    geo_check_enabled: int = Form(0),
-    geo_top_n: int = Form(1),
-):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
 
-    with Session(engine) as session:
-        rg = RatingGroup(
-            name=name.strip(),
-            webhook_path=webhook_path.strip().strip("/"),
-            max_proxies=max(0, max_proxies),
-            min_dl_kbps=max(0, min_dl_kbps),
-            min_ul_kbps=max(0, min_ul_kbps),
-            rename_prefix=rename_prefix.strip(),
-            consensus_only=bool(consensus_only),
-            geo_check_enabled=bool(geo_check_enabled),
-            geo_top_n=max(1, geo_top_n),
-        )
-        session.add(rg)
-        try:
-            session.commit()
-        except Exception as e:
-            logger.error(f"Error adding rating: {e}")
-            session.rollback()
+def _read_group_form(form) -> tuple[dict, set[int]]:
+    data = {
+        "name": str(form.get("name", "")).strip()[:100],
+        "webhook_path": str(form.get("webhook_path", "")).strip().strip("/"),
+        "max_proxies": _int(form, "max_proxies", 0, 0),
+        "min_dl_kbps": _int(form, "min_dl_kbps", 0, 0),
+        "min_ul_kbps": _int(form, "min_ul_kbps", 0, 0),
+        "rename_prefix": str(form.get("rename_prefix", "")).strip()[:100],
+        "consensus_only": form.get("consensus_only") == "1",
+        "geo_check_enabled": form.get("geo_check_enabled") == "1",
+        "geo_top_n": _int(form, "geo_top_n", 1, 1, 1000),
+        "excluded_countries": ", ".join(c.strip() for c in str(form.get("excluded_countries", "")).split(",") if c.strip()),
+        "auto_add_new_sources": form.get("auto_add_new_sources") == "1",
+        "enabled_protocols": json.dumps({p: form.get(f"proto_{p}") == "1" for p in PROTOCOLS}),
+        "schedule_interval_minutes": _int(form, "schedule_interval_minutes", 0, 0, 10080),
+        "good_proxy_retention_cycles": _int(form, "good_proxy_retention_cycles", 3, 0, 100),
+        "ban_duration_hours": _int(form, "ban_duration_hours", 168, 0, 8760),
+        "ban_after_n_failures": _int(form, "ban_after_n_failures", 3, 1, 100),
+        "ping_threshold_ms": _int(form, "ping_threshold_ms", 1000, 50, 10000),
+        "concurrent_checks_limit": _int(form, "concurrent_checks_limit", 50, 1, 500),
+        "http_timeout_s": _int(form, "http_timeout_s", 10, 1, 60),
+        "speed_test_top_n": _int(form, "speed_test_top_n", 0, 0, 50000),
+        "chunk_size": _int(form, "chunk_size", 0, 0, 10000),
+    }
+    source_ids = {int(v) for v in form.getlist("source_ids") if str(v).isdigit()}
+    return data, source_ids
 
+
+def _save_group(gid: int | None, data: dict, source_ids: set[int]) -> str | None:
+    """Create/update a group. Returns an error message or None."""
+    path = data["webhook_path"]
+    if not data["name"]:
+        return "Name is required"
+    if not WEBHOOK_PATH_RE.match(path) or path.split("/")[0].lower() in RESERVED_PATHS:
+        return f"Webhook path '{path}' is invalid or reserved (allowed: letters, digits, . _ ~ -)"
+    with Session(engine) as s:
+        clash = s.exec(select(RatingGroup).where(RatingGroup.webhook_path == path)).first()
+        if clash and clash.id != gid:
+            return f"Webhook path '{path}' is used by group '{clash.name}'"
+        group = s.get(RatingGroup, gid) if gid else RatingGroup()
+        if gid and not group:
+            return "Group not found"
+        old_protocols = group.enabled_protocols
+        for k, v in data.items():
+            setattr(group, k, v)
+        s.add(group)
+        s.flush()
+        valid_ids = {i for (i,) in s.exec(text("SELECT id FROM subscriptions")).all()}
+        sources_changed = pipeline.set_group_sources(s, group.id, source_ids & valid_ids)
+        s.commit()
+        new_id = group.id
+    rating.invalidate(new_id)
+    _invalidate_paths()
+    if not gid:
+        pipeline.request_cycle([new_id], fetch=True)
+    elif sources_changed or old_protocols != data["enabled_protocols"]:
+        pipeline.request_cycle([new_id], fetch=False)
+    return None
+
+
+@app.post("/ratings/save")
+async def ratings_save(request: Request):
+    _user(request)
+    form = await request.form()
+    gid = _int(form, "rating_id", 0, 0) or None
+    data, source_ids = _read_group_form(form)
+    error = await run_in_threadpool(_save_group, gid, data, source_ids)
+    if error:
+        from urllib.parse import quote
+        return RedirectResponse(f"/ratings?error={quote(error)}", status_code=302)
     return RedirectResponse("/ratings", status_code=302)
 
-@app.post("/ratings/edit/{rating_id}")
-async def edit_rating(
-    request: Request,
-    rating_id: int,
-    name: str = Form(...),
-    webhook_path: str = Form(...),
-    max_proxies: int = Form(0),
-    min_dl_kbps: int = Form(0),
-    min_ul_kbps: int = Form(0),
-    rename_prefix: str = Form(""),
-    consensus_only: int = Form(0),
-    geo_check_enabled: int = Form(0),
-    geo_top_n: int = Form(1),
-):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    with Session(engine) as session:
-        rg = session.get(RatingGroup, rating_id)
-        if rg:
-            rg.name = name.strip()
-            rg.webhook_path = webhook_path.strip().strip("/")
-            rg.max_proxies = max(0, max_proxies)
-            rg.min_dl_kbps = max(0, min_dl_kbps)
-            rg.min_ul_kbps = max(0, min_ul_kbps)
-            rg.rename_prefix = rename_prefix.strip()
-            rg.consensus_only = bool(consensus_only)
-            rg.geo_check_enabled = bool(geo_check_enabled)
-            rg.geo_top_n = max(1, geo_top_n)
-            session.add(rg)
-            try:
-                session.commit()
-            except Exception as e:
-                logger.error(f"Error editing rating: {e}")
-                session.rollback()
-
-    return RedirectResponse("/ratings", status_code=302)
 
 @app.post("/ratings/delete/{rating_id}")
-async def delete_rating(request: Request, rating_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    with Session(engine) as session:
-        rg = session.get(RatingGroup, rating_id)
-        if rg:
-            session.exec(delete(NodeRatingLink).where(NodeRatingLink.rating_group_id == rating_id))
-            session.delete(rg)
-            session.commit()
-
+def delete_rating(request: Request, rating_id: int):
+    _user(request)
+    with Session(engine) as s:
+        group = s.get(RatingGroup, rating_id)
+        if group:
+            pipeline.delete_group_data(s, rating_id)
+            s.delete(group)
+            s.commit()
+    rating.invalidate(rating_id)
+    _invalidate_paths()
     return RedirectResponse("/ratings", status_code=302)
+
+
+@app.post("/ratings/{rating_id}/fetch")
+def fetch_rating(request: Request, rating_id: int):
+    _user(request)
+    pipeline.request_cycle([rating_id], fetch=True)
+    return RedirectResponse(request.headers.get("referer") or "/ratings", status_code=302)
+
 
 @app.post("/ratings/{rating_id}/add-node/{node_id}")
-async def add_node_to_rating(request: Request, rating_id: int, node_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    with Session(engine) as session:
-        existing = session.exec(select(NodeRatingLink).where(
-            NodeRatingLink.rating_group_id == rating_id,
-            NodeRatingLink.node_id == node_id
-        )).first()
-        if not existing:
-            link = NodeRatingLink(rating_group_id=rating_id, node_id=node_id)
-            session.add(link)
-            try:
-                session.commit()
-            except Exception:
-                session.rollback()
-
+def add_node_to_rating(request: Request, rating_id: int, node_id: int):
+    _user(request)
+    with Session(engine) as s:
+        if s.get(RatingGroup, rating_id) and s.get(Node, node_id):
+            pipeline.link_node(s, rating_id, node_id)
+            s.commit()
+    rating.invalidate(rating_id)
     return RedirectResponse("/ratings", status_code=302)
+
 
 @app.post("/ratings/{rating_id}/remove-node/{node_id}")
-async def remove_node_from_rating(request: Request, rating_id: int, node_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    with Session(engine) as session:
-        link = session.exec(select(NodeRatingLink).where(
-            NodeRatingLink.rating_group_id == rating_id,
-            NodeRatingLink.node_id == node_id
-        )).first()
-        if link:
-            session.delete(link)
-            session.commit()
-
+def remove_node_from_rating(request: Request, rating_id: int, node_id: int):
+    _user(request)
+    with Session(engine) as s:
+        pipeline.unlink_node(s, rating_id, node_id)
+        s.commit()
+    rating.invalidate(rating_id)
     return RedirectResponse("/ratings", status_code=302)
 
+
 @app.get("/ratings/{rating_id}/proxies", response_class=HTMLResponse)
-async def rating_proxies_partial(request: Request, rating_id: int):
-    user = get_current_user(request)
-    if not user:
-        return PlainTextResponse("Unauthorized", status_code=401)
+def rating_proxies_partial(request: Request, rating_id: int):
+    _user(request)
+    return _page(request, "proxy_table.html", {"proxies": rating.get_rating(rating_id)})
 
-    proxy_list = await _db(_rating_proxies_sync, rating_id)
-    if proxy_list is None:
-        return PlainTextResponse("Rating group not found", status_code=404)
-    return templates.TemplateResponse(request, "proxy_table.html", {"proxies": proxy_list})
-
-
-def _rating_proxies_sync(rating_id: int):
-    """Build the rating proxy table. Blocking — call via _db().
-
-    Returns the proxy list, or None when the rating group does not exist.
-    """
-    with Session(engine) as session:
-        group = session.get(RatingGroup, rating_id)
-        if not group:
-            return None
-
-        # Snapshot the fields we need: _cleanup_stale_node_data may commit, which
-        # expires ORM instances (detached access would raise later).
-        g = {
-            "consensus_only": group.consensus_only,
-            "min_dl_kbps": group.min_dl_kbps,
-            "min_ul_kbps": group.min_ul_kbps,
-            "geo_check_enabled": group.geo_check_enabled,
-            "geo_top_n": group.geo_top_n,
-            "max_proxies": group.max_proxies,
-        }
-
-        cleanup_stats = _cleanup_stale_node_data(session)
-        online_ids = set(cleanup_stats.get("online_ids", []))
-
-        links = session.exec(select(NodeRatingLink).where(NodeRatingLink.rating_group_id == rating_id)).all()
-        linked_node_ids = {link.node_id for link in links}
-        target_node_ids = online_ids & linked_node_ids
-
-        if not target_node_ids:
-            return []
-
-        all_results = session.exec(
-            select(NodeProxyResult)
-            .where(NodeProxyResult.tests_passed > 0)
-            .where(NodeProxyResult.node_id.in_(target_node_ids))
-        ).all()
-
-    aggregated = {}
-    for r in all_results:
-        pid = get_proxy_identity(r.raw_url)
-        if pid not in aggregated:
-            aggregated[pid] = {"node_best": {}, "tests_total": r.tests_total}
-        agg = aggregated[pid]
-        nid = r.node_id
-        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
-            agg["node_best"][nid] = r
-        agg["tests_total"] = max(agg["tests_total"], r.tests_total)
-
-    proxy_list = []
-    for pid, agg in aggregated.items():
-        nc = len(agg["node_best"])
-        if nc == 0:
-            continue
-
-        if g["consensus_only"] and nc < len(target_node_ids):
-            continue
-
-        best_rows = list(agg["node_best"].values())
-        sum_scores = sum(r.speed_score for r in best_rows)
-        sum_dl = sum(r.download_speed_kbps for r in best_rows)
-        sum_ul = sum(r.upload_speed_kbps for r in best_rows)
-
-        avg_dl = sum_dl // nc
-        avg_ul = sum_ul // nc
-
-        if g["min_dl_kbps"] > 0 and avg_dl < g["min_dl_kbps"]: continue
-        if g["min_ul_kbps"] > 0 and avg_ul < g["min_ul_kbps"]: continue
-
-        best_ping = min(r.ping_ms for r in best_rows)
-        best_row = max(best_rows, key=lambda r: r.speed_score)
-
-        proxy_list.append({
-            "pid": pid,
-            "raw_url": best_row.raw_url,
-            "node_count": nc,
-            "avg_speed_score": round(sum_scores / nc, 1),
-            "avg_tests_passed": sum(r.tests_passed for r in best_rows) // nc,
-            "tests_total": max(r.tests_total for r in best_rows),
-            "best_ping_ms": best_ping,
-            "avg_dl_kbps": avg_dl,
-            "avg_ul_kbps": avg_ul,
-            "last_tested": max(r.last_tested for r in best_rows),
-            "country_name": getattr(best_row, "country_name", "") or "",
-        })
-
-    if g["geo_check_enabled"]:
-        geo_top_n = max(1, g["geo_top_n"] or 1)
-        country_proxies = {}
-        for p in proxy_list:
-            country = p["country_name"].strip()
-            if not country or country.lower() == "unknown" or country.lower() == "украина":
-                continue
-            if country not in country_proxies:
-                country_proxies[country] = []
-            country_proxies[country].append(p)
-
-        deduped_list = []
-        for country, proxies in country_proxies.items():
-            proxies.sort(key=lambda x: x["avg_speed_score"], reverse=True)
-            deduped_list.extend(proxies[:geo_top_n])
-        proxy_list = deduped_list
-
-    proxy_list.sort(key=lambda x: (-x["node_count"], -x["avg_speed_score"]))
-
-    if g["max_proxies"] > 0:
-        proxy_list = proxy_list[:g["max_proxies"]]
-
-    return proxy_list
 
 # ---------------------------------------------------------------------------
-# LOGS page
+# logs
 # ---------------------------------------------------------------------------
 @app.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse(request, "logs.html", {"user": user})
+def logs_page(request: Request):
+    return _page(request, "logs.html", {"user": _user(request)})
 
 
 @app.get("/api/logs")
-async def api_logs(after_id: int = 0):
-    entries = log_buffer.get_since(after_id)
-    return {"entries": entries}
+def api_logs(request: Request, after_id: int = 0):
+    _user(request)
+    return {"entries": log_buffer.get_since(after_id)}
 
 
 # ---------------------------------------------------------------------------
-# NODES management page
+# nodes
 # ---------------------------------------------------------------------------
+def _node_group_stats(s: Session) -> dict[int, list[dict]]:
+    now = utcnow()
+    rows = s.exec(text(
+        "SELECT st.node_id, st.group_id, g.name, st.status, st.current_chunk, st.total_chunks, "
+        " st.completed_generation, st.run_seq, g.generation_id, g.pool_size, "
+        " COALESCE(x.passed, 0), COALESCE(x.banned, 0), COALESCE(x.tested_gen, 0) "
+        "FROM node_group_state st JOIN rating_groups g ON g.id = st.group_id "
+        "JOIN node_rating_links l ON l.node_id = st.node_id AND l.rating_group_id = st.group_id "
+        "LEFT JOIN (SELECT s.group_id, s.node_id, SUM(s.tests_passed > 0 AND s.ping_ms > 0) passed, "
+        "  SUM(s.banned_until IS NOT NULL AND s.banned_until > :now) banned, "
+        "  SUM(s.generation_id = g2.generation_id || '.' || st2.run_seq) tested_gen "
+        "  FROM group_node_proxies s JOIN rating_groups g2 ON g2.id = s.group_id "
+        "  JOIN node_group_state st2 ON st2.group_id = s.group_id AND st2.node_id = s.node_id "
+        "  GROUP BY s.group_id, s.node_id) x ON x.group_id = st.group_id AND x.node_id = st.node_id "
+        "ORDER BY st.group_id").bindparams(now=now)).all()
+    out: dict[int, list[dict]] = {}
+    for (nid, gid, name, status, cur, total, completed, run_seq, gen, pool, passed, banned, tested) in rows:
+        eff = effective_generation(gen, run_seq)
+        out.setdefault(nid, []).append({
+            "group_id": gid, "name": name, "status": status, "current_chunk": cur, "total_chunks": total,
+            "done": bool(eff) and completed == eff, "pool": pool, "passed": passed, "banned": banned,
+            "tested": tested,
+        })
+    return out
+
+
 @app.get("/nodes", response_class=HTMLResponse)
-async def nodes_page(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        nodes = session.exec(select(Node).order_by(Node.id)).all()
-        settings = session.exec(select(Settings)).first()
-        # [NODE-BAN] сколько прокси сейчас забанено (banned_until в будущем) для каждой ноды
-        _now_iso = datetime.now(timezone.utc).isoformat()
-        banned_by_node = {
-            int(row[0]): int(row[1])
-            for row in session.exec(
-                select(NodeProxyState.node_id, func.count(NodeProxyState.id))
-                .where(NodeProxyState.banned_until.is_not(None))
-                .where(NodeProxyState.banned_until > _now_iso)
-                .group_by(NodeProxyState.node_id)
-            ).all()
-        }
-    return templates.TemplateResponse(request, "nodes.html", {
-        "user": user,
-        "nodes": nodes,
-        "settings": settings,
-        "banned_by_node": banned_by_node,  # [NODE-BAN]
-    })
-
-
-# ---------------------------------------------------------------------------
-# DEBUG: NodeProxyResult summary
-# ---------------------------------------------------------------------------
-@app.get("/api/debug/npr-summary")
-async def api_debug_npr_summary():
-    """Diagnostic: show NPR state, online nodes, and per-node row counts."""
-    return await _db(_npr_summary_sync)
-
-
-def _npr_summary_sync() -> dict:
-    with Session(engine) as session:
-        all_nodes = session.exec(select(Node)).all()
-        npr_total = session.exec(select(func.count(NodeProxyResult.id))).one()
-        npr_passing = session.exec(
-            select(func.count(NodeProxyResult.id))
-            .where(NodeProxyResult.tests_passed > 0)
-        ).one()
-
-        # Per-node NPR counts in one GROUP BY instead of N queries
-        counts = dict(
-            session.exec(
-                select(NodeProxyResult.node_id, func.count(NodeProxyResult.id))
-                .group_by(NodeProxyResult.node_id)
-            ).all()
-        )
-        node_npr_counts = {}
-        for node in all_nodes:
-            node_npr_counts[node.id] = {
-                "name": node.name,
-                "is_online": node.is_online,
-                "last_heartbeat": node.last_heartbeat,
-                "npr_count": counts.get(node.id, 0),
-            }
-
-        # Node IDs in NPR that aren't in nodes table — done in SQL, no full scan
-        orphan_rows = session.exec(
-            text(
-                "SELECT DISTINCT node_id FROM node_proxy_results "
-                "WHERE NOT EXISTS ("
-                "  SELECT 1 FROM nodes n WHERE n.id = node_proxy_results.node_id"
-                ")"
-            )
-        ).all()
-        orphan_ids = [int(r[0]) for r in orphan_rows]
-
-    return {
-        "nodes_total": len(all_nodes),
-        "nodes_online": sum(1 for n in all_nodes if n.is_online),
-        "npr_total": npr_total,
-        "npr_passing": npr_passing,
-        "per_node": node_npr_counts,
-        "orphan_node_ids_in_npr": orphan_ids,
-    }
+def nodes_page(request: Request):
+    user = _user(request)
+    with Session(engine) as s:
+        nodes = s.exec(select(Node).order_by(Node.id)).all()
+        settings = s.exec(select(Settings)).first()
+        stats = _node_group_stats(s)
+    return _page(request, "nodes.html", {"user": user, "nodes": nodes, "settings": settings, "stats": stats})
 
 
 @app.post("/nodes/delete/{node_id}")
-async def delete_node(request: Request, node_id: int):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
+def delete_node(request: Request, node_id: int):
+    _user(request)
+    with Session(engine) as s:
+        node = s.get(Node, node_id)
         if node:
-            session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
-            session.exec(delete(NodeProxyState).where(NodeProxyState.node_id == node_id))  # [NODE-BAN] каскад
-            session.delete(node)
-            session.commit()
+            pipeline.delete_node_data(s, node_id)
+            s.delete(node)
+            s.commit()
+    rating.invalidate_all()
     return RedirectResponse("/nodes", status_code=302)
 
 
 @app.post("/api/node/{node_id}/force-test")
-async def force_node_test(request: Request, node_id: int):
-    """Trigger a manual test run on a specific node."""
-    user = get_current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if not node:
+def force_node_test(request: Request, node_id: int):
+    """Re-test everything of every group of the node, without refetching sources."""
+    _user(request)
+    with Session(engine) as s:
+        if not s.get(Node, node_id):
             raise HTTPException(status_code=404, detail="Node not found")
-        node.force_test = True
-        # Reset counters for the new test run
-        node.proxies_checked = 0
-        node.proxies_passed = 0
-        session.add(node)
-        session.commit()
-    return {"status": "ok"}
-
-
-# Cache for node API token to avoid DB hit on every request
-_cached_node_token: str | None = None
-_cached_node_token_ts: float = 0.0
-_NODE_TOKEN_CACHE_TTL = 60.0  # seconds
-
-def _get_cached_node_token() -> str:
-    """Return the cached node_api_token, refreshing from DB every 60s."""
-    import time
-    global _cached_node_token, _cached_node_token_ts
-    now = time.monotonic()
-    if _cached_node_token is None or (now - _cached_node_token_ts) > _NODE_TOKEN_CACHE_TTL:
-        with Session(engine) as session:
-            settings = session.exec(select(Settings)).first()
-            _cached_node_token = (settings.node_api_token if settings else "") or ""
-            _cached_node_token_ts = now
-    return _cached_node_token
-
-def invalidate_node_token_cache():
-    """Call after token is changed in settings to force re-read."""
-    global _cached_node_token, _cached_node_token_ts
-    _cached_node_token = None
-    _cached_node_token_ts = 0.0
-
-def _verify_node_token(authorization: str | None) -> bool:
-    if not authorization or not authorization.startswith("Bearer "):
-        return False
-    token = authorization[7:]
-    expected = _get_cached_node_token()
-    return bool(expected) and token == expected
-
-
-@app.post("/api/node/register")
-async def node_register(request: Request, authorization: str = Header(None)):
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    body = await request.json()
-    name = body.get("name", "unnamed")
-    region = body.get("region", "unknown")
-
-    client_ip = request.client.host if request.client else ""
-
-    return await _db(_node_register_sync, name, region, client_ip)
-
-
-def _node_register_sync(name: str, region: str, client_ip: str) -> dict:
-    """Register/refresh a worker node. Blocking — call via _db()."""
-    with Session(engine) as session:
-        existing = session.exec(select(Node).where(Node.name == name)).first()
-        if existing:
-            # Anti-duplicate: if another instance is still online and testing, reject
-            stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=60)
-            try:
-                hb = datetime.fromisoformat(existing.last_heartbeat) if existing.last_heartbeat else None
-            except (ValueError, TypeError):
-                hb = None
-            is_recent = hb is not None and hb >= stale_threshold
-
-            # Anti-duplicate: block registration if another instance is still alive.
-            # is_recent = heartbeat within last 60 seconds.
-            # We block ALL duplicates, not just those in "testing" state —
-            # an idle node still means a live original that shouldn't be replaced.
-            if existing.is_online and is_recent:
-                logger.warning(f"Node '{name}' (id={existing.id}) is already active (status={existing.status}). "
-                               f"Rejecting duplicate registration from {client_ip}.")
-                return {"status": "already_active", "node_id": existing.id}
-
-            existing.ip = client_ip
-            existing.region = region
-            existing.is_online = True
-            existing.last_heartbeat = datetime.now(timezone.utc).isoformat()
-
-            # Reset results from previous worker instance to prevent
-            # stale counters on restart
-            session.exec(
-                delete(NodeProxyResult).where(
-                    NodeProxyResult.node_id == existing.id
-                )
-            )
-            existing.proxies_checked = 0
-            existing.proxies_passed = 0
-            existing.testing_generation_id = ""
-
-            session.add(existing)
-            session.commit()
-            return {"status": "updated", "node_id": existing.id}
-        else:
-            node = Node(
-                name=name,
-                region=region,
-                ip=client_ip,
-                is_online=True,
-                last_heartbeat=datetime.now(timezone.utc).isoformat(),
-            )
-            session.add(node)
-            session.commit()
-            session.refresh(node)
-            return {"status": "registered", "node_id": node.id}
-
-
-@app.get("/api/node/config")
-async def node_get_config(authorization: str = Header(None), node_id: int = Query(default=0)):
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    force_test = False
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        test_urls = session.exec(select(TestUrl).order_by(TestUrl.position)).all()
-        if node_id > 0:
-            node = session.get(Node, node_id)
-            if node:
-                force_test = node.force_test
-
-    return {
-        "ping_threshold_ms": settings.ping_threshold_ms if settings else 1000,
-        "http_timeout_s": settings.http_timeout_s if settings else 10,
-        "concurrent_checks_limit": settings.concurrent_checks_limit if settings else 50,
-        "speed_test_top_n": settings.speed_test_top_n if settings else 0,
-        "schedule_interval_minutes": settings.schedule_interval_minutes if settings else 0,
-        "chunk_size": settings.chunk_size if settings and settings.chunk_size else 0,
-        "generation_id": database.generation_id,
-        "force_test": force_test,
-        "test_urls": [
-            {"url": t.url, "expect_status": t.expect_status, "min_body_bytes": t.min_body_bytes}
-            for t in test_urls
-        ],
-        "geo_check_enabled": True,
-        "speed_test_dl_url": "/api/speedtest/download",
-    }
-
-
-@app.get("/api/node/proxies")
-async def node_get_proxies(
-    authorization: str = Header(None),
-    offset: int = Query(default=0),
-    limit: int = Query(default=0),
-    full: bool = Query(default=False),
-    node_id: int = Query(default=0),  # [NODE-BAN] кто спрашивает
-):
-    """Serve raw fetched proxies to workers for testing with optional pagination and protocol filtering."""
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    raw_urls, total, chunk_size = await _db(_get_proxies_sync, offset, limit, full, node_id)  # [NODE-BAN]
-
-    # In full mode: run_id = md5(generation_id) only (no offset, since chunking is now on worker)
-    # In paginated mode: run_id = md5(generation_id:offset) (legacy, kept for existing workers)
-    if full:
-        run_id_str = f"{database.generation_id}"
-    else:
-        run_id_str = f"{database.generation_id}:{offset}"
-    run_id = hashlib.md5(run_id_str.encode("utf-8")).hexdigest() if raw_urls else "empty"
-
-    # Calculate if there are more results (paginated mode only)
-    has_more = (offset + len(raw_urls)) < total if total > 0 else False
-
-    response = {
-        "run_id": run_id,
-        "proxies": raw_urls,
-        "offset": 0 if full else offset,
-        "total": total,
-        "has_more": False if full else has_more,
-    }
-
-    # In full mode: always return chunk_size so worker can slice locally
-    if full and chunk_size is not None:
-        response["chunk_size"] = chunk_size
-
-    return response
-
-
-def _node_filter_sets(session, node_id: int, now_iso: str):  # [NODE-BAN]
-    """Для ноды: (ключи забаненных ею прокси, список её retention-прокси)."""
-    # Filter in SQL and project only raw_url: the table holds ~340k rows per
-    # node, and loading them as ORM objects for two nodes at once OOM-killed
-    # the panel (768 MB limit) in a restart loop.
-    is_banned = (NodeProxyState.banned_until.is_not(None)) & (NodeProxyState.banned_until > now_iso)
-    banned = {
-        u.split("#", 1)[0]
-        for u in session.exec(
-            select(NodeProxyState.raw_url)
-            .where(NodeProxyState.node_id == node_id)
-            .where(is_banned)
-        ).all()
-    }
-    retained = list(session.exec(
-        select(NodeProxyState.raw_url)
-        .where(NodeProxyState.node_id == node_id)
-        .where(NodeProxyState.retention_cycles > 0)
-        .where(~is_banned)
-    ).all())
-    return banned, retained
-
-
-def _get_proxies_sync(offset: int, limit: int, full: bool, node_id: int = 0):
-    """Load raw proxy URLs. Blocking — call via _db().
-
-    Returns (sorted_urls, total, chunk_size). Uses a column projection instead of
-    instantiating ~67k ORM objects.
-    """
-    PROTOCOL_MAP = {
-        "vless": "vless://",
-        "vmess": "vmess://",
-        "trojan": "trojan://",
-        "ss": "ss://",
-        "hy2": "hy2://",
-        "hysteria2": "hysteria2://",
-    }
-
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-
-        # Parse enabled_protocols from settings
-        enabled_protocols = {}
-        if settings and settings.enabled_protocols:
-            try:
-                enabled_protocols = json.loads(settings.enabled_protocols)
-            except Exception:
-                enabled_protocols = {}
-
-        # Build protocol filter conditions (if any protocols are disabled)
-        conditions = []
-        for proto, prefix in PROTOCOL_MAP.items():
-            if enabled_protocols.get(proto, True):
-                conditions.append(RawProxy.raw_url.like(f"{prefix}%"))
-
-        # When full=True: ignore offset/limit, fetch everything.
-        effective_limit = 0
-        if not full:
-            if limit > 0:
-                effective_limit = limit
-            elif settings and settings.chunk_size > 0:
-                effective_limit = settings.chunk_size
-            elif settings and settings.node_check_top_n > 0:
-                effective_limit = settings.node_check_top_n
-
-        # Get total count with same filters
-        count_query = select(func.count(RawProxy.id))
-        if conditions:
-            count_query = count_query.where(or_(*conditions))
-        total = session.exec(count_query).one()
-
-        # Column projection — only raw_url, no ORM objects
-        query = select(RawProxy.raw_url).order_by(RawProxy.id)
-        if conditions:
-            query = query.where(or_(*conditions))
-        if not full and offset > 0:
-            query = query.offset(offset)
-        if effective_limit > 0:
-            query = query.limit(effective_limit)
-
-        rows = session.exec(query).all()
-        raw_urls = sorted([r[0] if isinstance(r, tuple) else r for r in rows])
-
-        # [NODE-BAN] пер-нодовая фильтрация списка для проверки этой нодой:
-        # убираем прокси, забаненные ИМЕННО этой нодой, и добавляем её retention-запас.
-        if node_id:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            banned_keys, retained = _node_filter_sets(session, node_id, now_iso)
-            if banned_keys:
-                raw_urls = [u for u in raw_urls if u.split("#", 1)[0] not in banned_keys]
-            have = {u.split("#", 1)[0] for u in raw_urls}
-            for u in retained:
-                if u.split("#", 1)[0] not in have:
-                    raw_urls.append(u)
-            raw_urls.sort()
-            total = len(raw_urls)
-
-        # Snapshot before the session closes (avoid detached-instance access)
-        chunk_size = None
-        if full and settings:
-            chunk_size = settings.chunk_size if settings.chunk_size else 0
-
-    return raw_urls, total, chunk_size
-
-
-@app.post("/api/node/results")
-async def node_post_results(request: Request, background_tasks: BackgroundTasks, authorization: str = Header(None)):
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    body = await request.json()
-    node_id = body.get("node_id")
-    results = body.get("results", [])
-    is_partial = body.get("is_partial", False)
-    generation_id = body.get("generation_id", "")
-
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-
-    now = datetime.now(timezone.utc).isoformat()
-    chunk_urls = [r.get("raw_url", "") for r in results]
-
-    # DELETE + INSERT + aggregate counters are blocking SQLite work; run them in
-    # the threadpool so a chunk report cannot stall the event loop.
-    try:
-        outcome = await _db(
-            _store_node_results, node_id, results, is_partial, generation_id, chunk_urls, now
-        )
-    except _NodeNotFound:
-        raise HTTPException(status_code=404, detail="Node not found")
-
-    logger.info(
-        f"Node {node_id} reported {len(results)} results "
-        f"({outcome['passed']} passed), is_partial={is_partial}"
-    )
-
-    # Evaluate bans only for the URLs in this chunk (never full-table scan)
-    if chunk_urls:
-        background_tasks.add_task(_evaluate_bans, chunk_urls)
-        background_tasks.add_task(_evaluate_node_bans, node_id, results)  # [NODE-BAN]
-
-    return {"status": "ok", "accepted": outcome["accepted"]}
-
-
-class _NodeNotFound(Exception):
-    """The reported node_id is not present in the nodes table."""
-
-
-def _store_node_results(
-    node_id: int,
-    results: list[dict],
-    is_partial: bool,
-    generation_id: str,
-    chunk_urls: list[str],
-    now: str,
-) -> dict:
-    """Persist a worker's result chunk. Blocking — call via _db()."""
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if not node:
-            raise _NodeNotFound()
-
-        # Detect generation change: wipe ALL old results for this node
-        # before accepting data from the new generation.
-        # This prevents stale rows from previous fetch cycles from
-        # inflating proxies_checked/proxies_passed counters.
-        if generation_id and generation_id != node.testing_generation_id:
-            logger.info(
-                f"Node {node_id}: generation changed "
-                f"('{node.testing_generation_id}' -> '{generation_id}'), "
-                f"wiping all old results."
-            )
-            session.exec(
-                delete(NodeProxyResult).where(
-                    NodeProxyResult.node_id == node_id
-                )
-            )
-            node.testing_generation_id = generation_id
-            node.proxies_checked = 0
-            node.proxies_passed = 0
-            # Force full clear even for this chunk — old data is gone
-            is_partial = False
-
-        # Clear old results: if partial, only delete for proxies in this chunk
-        if is_partial and chunk_urls:
-            session.exec(
-                delete(NodeProxyResult).where(
-                    NodeProxyResult.node_id == node_id,
-                    NodeProxyResult.raw_url.in_(chunk_urls)
-                )
-            )
-        else:
-            # Full replacement: clear all results for this node
-            session.exec(delete(NodeProxyResult).where(NodeProxyResult.node_id == node_id))
-
-        passed = 0
-        for r in results:
-            npr = NodeProxyResult(
-                node_id=node_id,
-                raw_url=r.get("raw_url", ""),
-                ping_ms=r.get("ping_ms", 0),
-                tests_passed=r.get("tests_passed", 0),
-                tests_total=r.get("tests_total", 0),
-                download_speed_kbps=r.get("download_speed_kbps", 0),
-                upload_speed_kbps=r.get("upload_speed_kbps", 0),
-                speed_score=r.get("speed_score", 0.0),
-                last_tested=now,
-                country_name=r.get("country_name", ""),
-            )
-            session.add(npr)
-            if r.get("tests_passed", 0) > 0:
-                passed += 1
-
-        # Recalculate counters from DB in one aggregate — correctly accumulates
-        # across partial chunks (was two separate COUNT(*) scans).
-        agg = session.exec(
-            select(
-                func.count(NodeProxyResult.id),
-                func.sum(case((NodeProxyResult.tests_passed > 0, 1), else_=0)),
-            ).where(NodeProxyResult.node_id == node_id)
-        ).one()
-        node.proxies_checked = agg[0] or 0
-        node.proxies_passed = agg[1] or 0
-        node.last_heartbeat = now
-        node.is_online = True
-        # Mark node idle when full result set is reported (testing cycle complete)
-        if not is_partial:
-            node.status = "idle"
-            node.total_chunks = 0
-            node.current_chunk = 0
-        session.add(node)
-        session.commit()
-
-    return {"accepted": len(results), "passed": passed}
-
-
-class _BansLocked(Exception):
-    """SQLite was locked mid-pass; carries how many batches already committed.
-
-    Used so a retry resumes after committed batches instead of double-counting
-    consecutive failures (which would ban proxies prematurely).
-    """
-
-    def __init__(self, committed: int, original: Exception):
-        super().__init__(str(original))
-        self.committed = committed
-        self.original = original
-
-
-def _evaluate_node_bans(node_id: int, results: list[dict]) -> None:  # [NODE-BAN]
-    """Пер-нодовая оценка: свой счётчик неудач, свой бан, свой retention.
-
-    Успех (правило владельца) = есть пинг И пройден хотя бы один URL-тест.
-    На успехе счётчик неудач обнуляется, retention ставится заново в N циклов.
-    На неудаче счётчик растёт, и по достижении порога из настроек прокси банится
-    ТОЛЬКО для этой ноды на ban_duration_hours часов.
-    """
-    if not results:
-        return
-    try:
-        _evaluate_node_bans_sync(node_id, results)
-    except Exception as e:
-        logger.error(f"[NODE-BAN] ошибка оценки состояния ноды {node_id}: {e}", exc_info=True)
-
-
-def _evaluate_node_bans_sync(node_id: int, results: list[dict]) -> None:
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        ban_after = (settings.ban_after_n_failures if settings else 3) or 3
-        ban_hours = settings.ban_duration_hours if settings else 168
-        retention_n = settings.good_proxy_retention_cycles if settings else 3
-        now_dt = datetime.now(timezone.utc)
-        now_iso = now_dt.isoformat()
-        ban_until_iso = (now_dt + timedelta(hours=ban_hours)).isoformat() if ban_hours > 0 else None
-
-        banned = 0
-        freed = 0
-        for r in results:
-            raw_url = (r.get("raw_url") or "").strip()
-            if not raw_url:
-                continue
-            passed = int(r.get("ping_ms") or 0) > 0 and int(r.get("tests_passed") or 0) > 0
-            row = session.exec(
-                select(NodeProxyState).where(
-                    NodeProxyState.node_id == node_id,
-                    NodeProxyState.raw_url == raw_url,
-                )
-            ).first()
-            if row is None:
-                row = NodeProxyState(node_id=node_id, raw_url=raw_url)
-            if passed:
-                if row.banned_until:
-                    freed += 1
-                row.consecutive_failures = 0
-                row.banned_until = None
-                row.retention_cycles = retention_n or 0
-                row.last_passed = now_iso
-            else:
-                row.consecutive_failures = (row.consecutive_failures or 0) + 1
-                if ban_until_iso and row.consecutive_failures >= ban_after:
-                    row.banned_until = ban_until_iso
-                    row.consecutive_failures = 0  # после бана у прокси снова N попыток
-                    banned += 1
-            row.last_tested = now_iso
-            row.seen_in_sources = True
-            session.add(row)
-        session.commit()
-        if banned or freed:
-            logger.info(
-                f"[NODE-BAN] нода {node_id}: забанено {banned}, разбанено {freed} "
-                f"(порог {ban_after} неудач, бан {ban_hours} ч, retention {retention_n})"
-            )
-
-
-def _evaluate_bans(raw_urls: list[str] | None = None):
-    """Evaluate ban status for proxies based on cross-node consensus.
-
-    Args:
-        raw_urls: List of proxy URLs to evaluate (from the current chunk).
-                  If None or empty, returns immediately — never scans the full table.
-
-    Rules:
-    - A proxy is considered 'failed' only if it failed on ALL connected workers
-    - If it passed on at least one worker → reset consecutive_failures to 0
-    - Ban only after N consecutive failures (ban_after_n_failures setting)
-    """
-    # Never do a full-table scan — require explicit URL list
-    if not raw_urls:
-        return
-
-    batch_urls = list(set(raw_urls))
-    if not batch_urls:
-        return
-
-    # The scheduler's bulk rebuild can briefly hold the write lock; retry with
-    # backoff instead of bubbling a 500 up to the worker. Already-committed
-    # batches are skipped so failures are never double-counted.
-    last_err = None
-    done_batches = 0
-    for attempt in range(3):
-        try:
-            _evaluate_bans_once(batch_urls, done_batches)
-            return
-        except _BansLocked as e:
-            # committed is absolute (it counts skipped batches too), so assign.
-            done_batches = e.committed
-            last_err = e.original
-            msg = str(e.original).lower()
-            if "locked" not in msg and "busy" not in msg:
-                break
-            _time.sleep(2 ** attempt)
-        except Exception as e:
-            logger.error(f"Error evaluating bans: {e}", exc_info=True)
-            return
-    if last_err is not None:
-        logger.error(f"Error evaluating bans (retries exhausted): {last_err}")
-
-
-def _evaluate_bans_once(batch_urls: list[str], skip_batches: int = 0) -> int:
-    """Evaluate one pass. Returns the number of batches committed.
-
-    ``skip_batches`` lets a retry resume after already-committed batches instead
-    of double-counting consecutive failures.
-    """
-    with Session(engine) as session:
-        settings = session.exec(select(Settings)).first()
-        if not settings or settings.ban_duration_hours <= 0:
-            return 0  # Bans disabled
-
-        ban_threshold = settings.ban_after_n_failures or 3
-        ban_duration = settings.ban_duration_hours
-
-        # Get online node IDs only (lightweight — just the id column)
-        node_id_rows = session.exec(
-            select(Node.id).where(Node.is_online == True)
-        ).all()
-        if not node_id_rows:
-            return 0
-        node_ids = [int(r[0]) if isinstance(r, tuple) else int(r) for r in node_id_rows]
-        node_ids_set = set(node_ids)
-
-        banned_count = 0
-        reset_count = 0
-        committed = 0
-
-        BATCH = 500
-        for bi, i in enumerate(range(0, len(batch_urls), BATCH)):
-            if bi < skip_batches:
-                committed += 1
-                continue
-            chunk = batch_urls[i:i + BATCH]
-
-            # Column projection — only the 3 columns we need, no full ORM objects
-            rows = session.exec(
-                select(
-                    NodeProxyResult.raw_url,
-                    NodeProxyResult.node_id,
-                    NodeProxyResult.tests_passed,
-                ).where(NodeProxyResult.raw_url.in_(chunk))
-            ).all()
-
-            per_url: dict[str, dict[int, int]] = defaultdict(dict)
-            for raw_url, nid, tp in rows:
-                if nid in node_ids_set:
-                    per_url[raw_url][nid] = tp
-
-            if not per_url:
-                committed += 1
-                continue
-
-            # Load only the RawProxy rows we actually need
-            rps = session.exec(
-                select(RawProxy).where(
-                    RawProxy.raw_url.in_(list(per_url.keys()))
-                )
-            ).all()
-            rp_map = {rp.raw_url: rp for rp in rps}
-
-            for raw_url, node_results in per_url.items():
-                rp = rp_map.get(raw_url)
-                if not rp:
-                    continue
-
-                passed_on_any = any(tp > 0 for tp in node_results.values())
-
-                if passed_on_any:
-                    if rp.consecutive_failures > 0:
-                        rp.consecutive_failures = 0
-                        rp.banned_until = None
-                        reset_count += 1
-                else:
-                    tested_on_all = all(nid in node_results for nid in node_ids)
-                    if tested_on_all:
-                        rp.consecutive_failures += 1
-                        if rp.consecutive_failures >= ban_threshold:
-                            rp.banned_until = (
-                                datetime.now(timezone.utc)
-                                + timedelta(hours=ban_duration)
-                            ).isoformat()
-                            banned_count += 1
-
-                session.add(rp)
-
-            # Commit per batch to avoid holding large transaction.
-            # A locked write here must report progress so the retry can resume.
-            try:
-                session.commit()
-            except OperationalError as e:
-                raise _BansLocked(committed, e) from e
-            session.expunge_all()
-            committed += 1
-
-        if banned_count > 0:
-            logger.info(
-                f"Banned {banned_count} proxies (failed {ban_threshold}+ times "
-                f"on all {len(node_ids)} nodes, ban={ban_duration}h)"
-            )
-        if reset_count > 0:
-            logger.info(
-                f"Reset {reset_count} proxy failure counters "
-                f"(passed on at least one node)"
-            )
-
-        return committed
-
-
-# ---------------------------------------------------------------------------
-# Shared cleanup: remove stale NodeProxyResult rows from offline/orphan nodes
-# ---------------------------------------------------------------------------
-_ORPHAN_CLEANUP_INTERVAL_S = 60.0
-_last_orphan_cleanup_ts = 0.0
-
-
-def _cleanup_stale_node_data(session) -> dict:
-    """Delete NodeProxyResult rows belonging to offline or non-existent nodes.
-
-    Uses datetime.fromisoformat() to safely compare ISO timestamps
-    (avoids edge cases with differing microsecond / timezone precision).
-
-    Returns a dict with cleanup statistics for logging.
-    """
-    global _last_orphan_cleanup_ts
-    stale_threshold_dt = datetime.now(timezone.utc) - timedelta(minutes=30)
-    stats = {
-        "stale_marked": 0,
-        "orphan_npr_deleted": 0,
-        "online_ids": [],
-    }
-
-    all_nodes = session.exec(select(Node)).all()
-
-    # Step 1: Mark nodes as offline if no heartbeat in last 5 minutes
-    for node in all_nodes:
-        if not node.is_online:
-            continue
-        if not node.last_heartbeat:
-            node.is_online = False
-            node.status = "idle"
-            node.total_chunks = 0
-            node.current_chunk = 0
-            stats["stale_marked"] += 1
-            logger.info(
-                f"Marked node {node.id} ({node.name}) as offline (last_heartbeat=NULL)"
-            )
-            continue
-        try:
-            hb = datetime.fromisoformat(node.last_heartbeat)
-            if hb < stale_threshold_dt:
-                node.is_online = False
-                node.status = "idle"
-                node.total_chunks = 0
-                node.current_chunk = 0
-                stats["stale_marked"] += 1
-                logger.info(
-                    f"Marked node {node.id} ({node.name}) as offline "
-                    f"(last_heartbeat={node.last_heartbeat})"
-                )
-        except (ValueError, TypeError):
-            node.is_online = False
-            node.status = "idle"
-            node.total_chunks = 0
-            node.current_chunk = 0
-            stats["stale_marked"] += 1
-            logger.warning(
-                f"Marked node {node.id} ({node.name}) as offline "
-                f"(malformed last_heartbeat={node.last_heartbeat!r})"
-            )
-
-    if stats["stale_marked"] > 0:
-        session.commit()
-
-    # Step 2: Delete NPR rows whose node_id is not present in the nodes table.
-    # One SQL statement — the previous Python-side DISTINCT materialised every
-    # node_id in the table (570k rows => 20s+ stalls on the webhook path).
-    # Throttled: webhooks are public and hit frequently; a no-op DELETE still
-    # takes a brief write lock.
-    now_mono = _time.monotonic()
-    if now_mono - _last_orphan_cleanup_ts >= _ORPHAN_CLEANUP_INTERVAL_S:
-        result = session.exec(
-            text(
-                "DELETE FROM node_proxy_results "
-                "WHERE NOT EXISTS ("
-                "  SELECT 1 FROM nodes n WHERE n.id = node_proxy_results.node_id"
-                ")"
-            )
-        )
-        session.commit()
-        deleted = result.rowcount if hasattr(result, "rowcount") else 0
-        stats["orphan_npr_deleted"] = deleted
-        _last_orphan_cleanup_ts = now_mono
-        if deleted:
-            logger.info(
-                f"Cleaned up {deleted} NodeProxyResult rows from orphan "
-                f"node_ids (node no longer exists)"
-            )
-
-    # Collect remaining online node IDs (fresh query)
-    online_rows = session.exec(select(Node.id).where(Node.is_online == True)).all()
-    stats["online_ids"] = [
-        int(row[0]) if isinstance(row, tuple) else int(row)
-        for row in online_rows
-    ]
-
-    return stats
-
-
-@app.post("/api/node/heartbeat")
-async def node_heartbeat(request: Request, authorization: str = Header(None)):
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    body = await request.json()
-    node_id = body.get("node_id")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if node:
-            node.last_heartbeat = datetime.now(timezone.utc).isoformat()
-            node.is_online = True
-            session.add(node)
-            session.commit()
-
-    return {"status": "ok"}
-
-
-@app.post("/api/node/logs")
-async def node_logs(request: Request, authorization: str = Header(None)):
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    body = await request.json()
-    node_id = body.get("node_id")
-    logs = body.get("logs", [])
-    
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-        
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-        node_name = node.name
-
-    for log in logs:
-        entry = {
-            "timestamp": log.get("timestamp"),
-            "level": log.get("level", "INFO"),
-            "logger": f"worker:{node_name}",
-            "message": log.get("message", "")
-        }
-        log_buffer.append(entry)
-        
-    return {"status": "ok", "received": len(logs)}
-
-
-# ---------------------------------------------------------------------------
-# NODE STATUS — worker reports testing progress
-# ---------------------------------------------------------------------------
-@app.post("/api/node/status")
-async def node_update_status(request: Request, authorization: str = Header(None)):
-    """Worker reports: idle/testing, current_chunk/total_chunks, generation_id."""
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    body = await request.json()
-    node_id = body.get("node_id")
-    status = body.get("status", "idle")
-    current_chunk = body.get("current_chunk", 0)
-    total_chunks = body.get("total_chunks", 0)
-    testing_gen_id = body.get("generation_id", "")
-
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-
-    now = datetime.now(timezone.utc).isoformat()
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-        node.status = status
-        node.current_chunk = current_chunk
-        node.total_chunks = total_chunks
-        node.testing_generation_id = testing_gen_id
-        # Reset force_test flag when node starts testing
-        if status == "testing" and node.force_test:
-            node.force_test = False
-        node.last_heartbeat = now
-        node.is_online = True
-        session.add(node)
-        session.commit()
-
-    logger.debug(f"Node {node_id} status: {status}, chunk {current_chunk}/{total_chunks}")
+        s.exec(text("UPDATE node_group_state SET run_seq = run_seq + 1 WHERE node_id = :n").bindparams(n=node_id))
+        s.commit()
     return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
-# NODE STATE — worker fetches its own state on startup (crash recovery)
+# speed test blob (fallback download target for nodes in restricted networks)
 # ---------------------------------------------------------------------------
-@app.get("/api/node/state")
-async def node_get_state(node_id: int = Query(...), authorization: str = Header(None)):
-    """Worker fetches its saved state to resume after crash."""
-    if not _verify_node_token(authorization):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    with Session(engine) as session:
-        node = session.get(Node, node_id)
-        if not node:
-            raise HTTPException(status_code=404, detail="Node not found")
-        settings = session.exec(select(Settings)).first()
-        return {
-            "status": node.status,
-            "current_chunk": node.current_chunk,
-            "total_chunks": node.total_chunks,
-            "testing_generation_id": node.testing_generation_id,
-            "chunk_size": settings.chunk_size if settings else 0,
-        }
+_SPEEDTEST_BLOB = os.urandom(10 * 1024 * 1024)
 
 
-# ---------------------------------------------------------------------------
-# Speed test download endpoint (self-hosted fallback for restricted nodes)
-# ---------------------------------------------------------------------------
-_SPEEDTEST_BLOB_SIZE = 10 * 1024 * 1024  # 10 MB
-_speedtest_blob: bytes | None = None
-
-
-def _get_speedtest_blob() -> bytes:
-    """Lazily generate and cache a 10 MB random blob for speed testing."""
-    global _speedtest_blob
-    if _speedtest_blob is None:
-        import os as _os
-        _speedtest_blob = _os.urandom(_SPEEDTEST_BLOB_SIZE)
-    return _speedtest_blob
-
-
-@app.get("/api/speedtest/download")
+@app.get(node_api.SPEEDTEST_PATH)
 async def speedtest_download():
-    """Serve a 10 MB binary blob for speed testing.
-
-    Nodes behind restricted networks (e.g. MTS whitelist) can use this
-    endpoint as a reliable fallback when external speed test servers
-    are unreachable.  No auth required — only random bytes are served.
-    """
-    blob = _get_speedtest_blob()
-    return Response(
-        content=blob,
-        media_type="application/octet-stream",
-        headers={
-            "Content-Length": str(len(blob)),
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
-        },
-    )
+    return Response(_SPEEDTEST_BLOB, media_type="application/octet-stream",
+                    headers={"Cache-Control": "no-cache", "Content-Encoding": "identity"})
 
 
 # ---------------------------------------------------------------------------
-# FETCH SUBSCRIPTIONS (replaces run-test)
-_background_tasks = set()
-
-@app.post("/fetch-subs")
-async def fetch_subs(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=302)
-
-    if fetch_status["running"]:
-        return RedirectResponse("/", status_code=302)
-
-    # Set status BEFORE scheduling the task so the redirect renders with correct state
-    fetch_status["running"] = True
-    fetch_status["current_phase"] = "starting"
-
-    task = asyncio.create_task(_background_fetch())
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    return RedirectResponse("/", status_code=302)
-
-
-async def _background_fetch():
-    """Manual 'Fetch subs' — runs the blocking pipeline in a worker thread."""
-    try:
-        await asyncio.to_thread(_background_fetch_sync)
-    except Exception as e:
-        logger.error(f"Fetch pipeline error: {e}", exc_info=True)
-        fetch_status["current_phase"] = "error"
-    finally:
-        fetch_status["running"] = False
-
-
-def _background_fetch_sync():
-    """Blocking subscription fetch pipeline (off the event loop)."""
-    fetch_status["current_phase"] = "fetching"
-    fetch_status["fetched_proxies"] = 0
-
-    with Session(engine) as session:
-        fetch_status["total_subs"] = session.exec(select(func.count(Subscription.id))).one()
-
-    good_proxies, retention_limit, enabled_protocols, old_retention = load_state()
-
-    # Pass session to update last_config_count
-    with Session(engine) as session:
-        proxy_links = fetch_and_parse_subscriptions_sync(session, enabled_protocols)
-
-    final_proxies = build_final_proxies(
-        proxy_links, good_proxies, retention_limit, old_retention
-    )
-
-    fetch_status["current_phase"] = "saving"
-    fetch_status["fetched_proxies"] = len(final_proxies)
-
-    if final_proxies:
-        stored = store_raw_proxies(final_proxies)
-        # Bump generation_id only after the new set is fully stored: workers that
-        # raced the rebuild keep the old generation and their results get wiped.
-        database.generation_id = str(uuid.uuid4())
-        logger.info(
-            f"Background fetch: stored {stored} proxies, "
-            f"generation_id={database.generation_id}"
-        )
-    else:
-        logger.warning("Background fetch: no proxy links found from subscriptions")
-
-    fetch_status["current_phase"] = "done"
-    fetch_status["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
-    logger.info(f"Subscription fetch complete: {len(final_proxies)} unique proxies stored for workers")
-
-
+# webhooks — must stay the last route
 # ---------------------------------------------------------------------------
-# FETCH STATUS API (for AJAX polling)
-# ---------------------------------------------------------------------------
-@app.get("/api/fetch-status")
-async def api_fetch_status():
-    return {
-        **fetch_status,
-        "scheduler": scheduler_status,
-    }
+_paths: dict = {"map": {}, "at": 0.0}
 
 
-# ---------------------------------------------------------------------------
-# WEBHOOK — Public proxy distribution (from node results)
-# ---------------------------------------------------------------------------
-def _compute_webhook_averages(
-    results: list[NodeProxyResult],
-) -> dict[str, dict]:
-    """Aggregate per proxy identity: best result per node_id, then compute averages.
+def _invalidate_paths() -> None:
+    _paths["at"] = 0.0
 
-    Returns dict: identity_key -> {"raw_url": str, "avg_dl": int, "avg_ul": int, "avg_score": float,
-                                    "node_ids": list, "country_name": str}
-    """
-    grouped: dict[str, dict] = {}
-    for r in results:
-        if r.tests_passed <= 0:
-            continue
-        pid = get_proxy_identity(r.raw_url)
-        if pid not in grouped:
-            grouped[pid] = {"node_best": {}, "total": r.tests_total}
-        agg = grouped[pid]
-        nid = r.node_id
-        if nid not in agg["node_best"] or r.speed_score > agg["node_best"][nid].speed_score:
-            agg["node_best"][nid] = r
 
-    out = {}
-    for pid, agg in grouped.items():
-        nc = len(agg["node_best"])
-        if nc == 0:
-            continue
-        rows = list(agg["node_best"].values())
-        node_ids = list(agg["node_best"].keys())
-        best_row = max(rows, key=lambda r: r.speed_score)
-        # Pick country_name from the best-scoring row (most reliable result)
-        country = getattr(best_row, "country_name", "") or ""
-        out[pid] = {
-            "raw_url": best_row.raw_url,
-            "avg_dl": sum(r.download_speed_kbps for r in rows) // nc,
-            "avg_ul": sum(r.upload_speed_kbps for r in rows) // nc,
-            "avg_score": round(sum(r.speed_score for r in rows) / nc, 1),
-            "node_ids": node_ids,
-            "country_name": country,
-        }
-    return out
-
+def _webhook(path: str) -> str | None:
+    if time.monotonic() - _paths["at"] > 60:
+        with Session(engine) as s:
+            _paths["map"] = {g.webhook_path: g.id for g in s.exec(select(RatingGroup)).all()}
+        _paths["at"] = time.monotonic()
+    gid = _paths["map"].get(path)
+    if gid is None:
+        return None
+    with Session(engine) as s:
+        group = s.get(RatingGroup, gid)
+    return rating.webhook_text(group) if group else None
 
 
 @app.get("/{secret_path:path}")
-async def webhook_output(secret_path: str):
-    # All the work below is blocking SQLite/aggregation — keep it off the loop.
-    return await _db(_webhook_output_sync, secret_path)
-
-
-def _webhook_output_sync(secret_path: str):
-    with Session(engine) as session:
-        # Check if secret_path matches a RatingGroup
-        group = session.exec(select(RatingGroup).where(RatingGroup.webhook_path == secret_path)).first()
-        if not group:
-            raise HTTPException(status_code=404)
-        
-        # Cleanup stale node data (marks offline nodes, deletes orphan results)
-        cleanup_stats = _cleanup_stale_node_data(session)
-        
-        # RE-LOAD group after cleanup
-        group = session.get(RatingGroup, group.id)
-        if not group:
-            raise HTTPException(status_code=404)
-        
-        online_ids = cleanup_stats.get("online_ids", [])
-        if not online_ids:
-            logger.warning("Webhook: no online nodes, returning empty list")
-            return PlainTextResponse("", media_type="text/plain; charset=utf-8")
-        
-        online_ids_set = set(online_ids)
-
-        # Get linked nodes for this group
-        links = session.exec(select(NodeRatingLink).where(NodeRatingLink.rating_group_id == group.id)).all()
-        linked_node_ids = {link.node_id for link in links}
-        # Intersect with online_ids
-        target_node_ids = online_ids_set & linked_node_ids
-
-        if not target_node_ids:
-            logger.warning(f"Webhook {secret_path}: no target online nodes, returning empty list")
-            return PlainTextResponse("", media_type="text/plain; charset=utf-8")
-        
-        # Load results only from target nodes where tests_passed > 0
-        all_results = session.exec(
-            select(NodeProxyResult)
-            .where(NodeProxyResult.tests_passed > 0)
-            .where(NodeProxyResult.node_id.in_(target_node_ids))
-        ).all()
-        
-        # Aggregate: best result per (identity, node_id), then compute averages
-        avg_data = _compute_webhook_averages(all_results)
-        
-        # Determine filtering parameters
-        consensus_only = group.consensus_only
-        min_dl = group.min_dl_kbps or 0
-        min_ul = group.min_ul_kbps or 0
-        geo_top_n = max(1, group.geo_top_n or 1)
-        top_n = group.max_proxies or 0
-        prefix = (group.rename_prefix or "").strip()
-        geo_enabled = group.geo_check_enabled
-
-        # Consensus-only filter
-        if consensus_only:
-            consensus_threshold = len(target_node_ids)
-            if consensus_threshold > 0:
-                consensus_data = {}
-                for pid, d in avg_data.items():
-                    if len(d["node_ids"]) >= consensus_threshold:
-                        consensus_data[pid] = d
-                avg_data = consensus_data
-        
-        # Apply speed filters BEFORE sorting and limiting
-        filtered_data = {}
-        for pid, d in avg_data.items():
-            if (min_dl == 0 or d["avg_dl"] >= min_dl) and (min_ul == 0 or d["avg_ul"] >= min_ul):
-                filtered_data[pid] = d
-        
-        # Geo-check deduplication
-        if geo_enabled:
-            country_proxies: dict[str, list[tuple[str, dict]]] = {}
-            for pid, d in filtered_data.items():
-                country = d.get("country_name", "").strip()
-                if not country or country.lower() == "unknown":
-                    continue
-                if country.lower() == "украина":
-                    continue
-                if country not in country_proxies:
-                    country_proxies[country] = []
-                country_proxies[country].append((pid, d))
-            
-            deduped_data = {}
-            for country, proxies in country_proxies.items():
-                proxies.sort(key=lambda x: x[1]["avg_score"], reverse=True)
-                for pid, d in proxies[:geo_top_n]:
-                    deduped_data[pid] = d
-            
-            filtered_data = deduped_data
-        
-        # Sort: node_count (desc) → avg_score (desc)
-        sorted_pids = sorted(
-            filtered_data.keys(),
-            key=lambda pid: (len(filtered_data[pid]["node_ids"]), filtered_data[pid]["avg_score"]),
-            reverse=True,
-        )
-        
-        # Limit to top-N
-        if top_n > 0:
-            sorted_pids = sorted_pids[:top_n]
-        
-        # Build output lines with appropriate naming
-        lines = []
-        if geo_enabled:
-            country_counters: dict[str, int] = {}
-            for pid in sorted_pids:
-                url = filtered_data[pid]["raw_url"]
-                country = filtered_data[pid].get("country_name", "").strip()
-                if country:
-                    country_counters[country] = country_counters.get(country, 0) + 1
-                    idx = country_counters[country]
-                    if geo_top_n > 1:
-                        remark = f"{country} {idx}"
-                    else:
-                        remark = country
-                    url = replace_proxy_remark(url, remark)
-                else:
-                    continue
-                lines.append(url)
-        else:
-            for i, pid in enumerate(sorted_pids, start=1):
-                url = filtered_data[pid]["raw_url"]
-                if prefix:
-                    url = replace_proxy_remark(url, f"{prefix} - {i}")
-                lines.append(url)
-        
-        return PlainTextResponse("\n".join(lines), media_type="text/plain; charset=utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Run with uvicorn
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+def webhook_output(secret_path: str):
+    body = _webhook(secret_path)
+    if body is None:
+        raise HTTPException(status_code=404)
+    return PlainTextResponse(body, media_type="text/plain; charset=utf-8")

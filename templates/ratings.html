@@ -1,399 +1,359 @@
 {% extends "base.html" %}
-{% block title %}Ratings — {{ t(request, 'app_title') }}{% endblock %}
+{% block title %}{{ t(request, 'nav_ratings', default='Ratings') }} — {{ t(request, 'app_title') }}{% endblock %}
 {% block content %}
+{% set input = "w-full px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-600/30 text-white outline-none text-sm" %}
 <div class="space-y-6">
     <div class="flex items-center justify-between">
         <div>
-            <h1 class="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Ratings</h1>
-            <p class="text-slate-400 mt-2">Manage custom rating groups and assign worker nodes to them.</p>
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">{{ t(request, 'nav_ratings', default='Ratings') }}</h1>
+            <p class="text-slate-400 mt-2">{{ t(request, 'ratings_desc', default='Each group has its own sources, schedule, policies, nodes and webhook.') }}</p>
         </div>
-        <button onclick="document.getElementById('addRatingModal').classList.remove('hidden')" class="btn-primary px-5 py-2.5 rounded-xl text-white font-semibold text-sm flex items-center gap-2 shadow-lg shadow-indigo-500/20">
+        <button onclick="openGroupForm(null)" class="btn-primary px-5 py-2.5 rounded-xl text-white font-semibold text-sm flex items-center gap-2">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Rating Group
+            {{ t(request, 'ratings_add', default='Add Rating Group') }}
         </button>
     </div>
 
-    <!-- Ratings List -->
+    {% if error %}
+    <div class="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm">{{ error }}</div>
+    {% endif %}
+
     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {% for rating in ratings %}
+        {% for card in cards %}
+        {% set rating = card.group %}
         <div class="glass p-6 rounded-2xl border border-slate-700/50">
-            <div class="flex justify-between items-start mb-4">
-                <div>
-                    <h3 class="text-xl font-bold text-white mb-1">{{ rating.name }}</h3>
-                    <div class="text-sm text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 inline-block">
-                        /{{ rating.webhook_path }}
-                    </div>
+            <div class="flex justify-between items-start mb-4 gap-3">
+                <div class="min-w-0">
+                    <h3 class="text-xl font-bold text-white mb-1 truncate">{{ rating.name }}</h3>
+                    <div class="text-sm text-indigo-400 font-mono bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 inline-block break-all">/{{ rating.webhook_path }}</div>
                 </div>
-                <div class="flex gap-2">
-                    <button onclick="viewProxies({{ rating.id }}, '{{ rating.name|escape }}')" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-emerald-400 transition-colors" title="View Proxies">
+                <div class="flex gap-2 flex-shrink-0">
+                    <button onclick="viewProxies({{ rating.id }}, {{ rating.name|tojson|forceescape }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-emerald-400" title="{{ t(request, 'ratings_view', default='View proxies') }}">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    <button onclick="copyWebhook('{{ request.base_url }}{{ rating.webhook_path }}')" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-indigo-400 transition-colors" title="Copy URL">
+                    <button onclick="copyWebhook('{{ request.base_url }}{{ rating.webhook_path }}')" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-indigo-400" title="{{ t(request, 'ratings_copy', default='Copy URL') }}">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
                     </button>
-                    <button onclick="editRating({{ rating.id }}, '{{ rating.name|escape }}', '{{ rating.webhook_path|escape }}', {{ rating.max_proxies }}, {{ rating.min_dl_kbps }}, {{ rating.min_ul_kbps }}, '{{ rating.rename_prefix|escape }}', {{ 'true' if rating.consensus_only else 'false' }}, {{ 'true' if rating.geo_check_enabled else 'false' }}, {{ rating.geo_top_n }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-amber-400 transition-colors" title="Edit">
+                    <form action="/ratings/{{ rating.id }}/fetch" method="post" class="inline">
+                        <button type="submit" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-cyan-400" title="{{ t(request, 'ratings_fetch_now', default='Fetch sources now') }}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        </button>
+                    </form>
+                    <button onclick="openGroupForm({{ rating.id }})" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-amber-400" title="{{ t(request, 'ratings_settings', default='Group settings') }}">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                     </button>
-                    <form action="/ratings/delete/{{ rating.id }}" method="post" onsubmit="return confirm('Delete this rating group?');" class="inline">
-                        <button type="submit" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-rose-400 transition-colors" title="Delete">
+                    <form action="/ratings/delete/{{ rating.id }}" method="post" onsubmit="return confirm('{{ t(request, 'ratings_delete_confirm', default='Delete this rating group with all its results?') }}');" class="inline">
+                        <button type="submit" class="p-2 rounded-lg bg-slate-800/60 text-slate-300 hover:text-rose-400" title="Delete">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         </button>
                     </form>
                 </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-5 text-sm">
                 <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
-                    <div class="text-xs text-slate-500 mb-1">Max Proxies</div>
-                    <div class="text-sm font-medium text-slate-200">{{ rating.max_proxies if rating.max_proxies > 0 else 'Unlimited' }}</div>
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_pool', default='Pool / valid') }}</div>
+                    <div class="font-medium text-slate-200">{{ rating.pool_size }} / <span class="text-emerald-400">{{ card.valid }}</span></div>
                 </div>
                 <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
-                    <div class="text-xs text-slate-500 mb-1">Min Speed (DL / UL)</div>
-                    <div class="text-sm font-medium text-slate-200">
-                        {{ rating.min_dl_kbps if rating.min_dl_kbps > 0 else '0' }} / 
-                        {{ rating.min_ul_kbps if rating.min_ul_kbps > 0 else '0' }} KB/s
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_sources', default='Sources') }}</div>
+                    <div class="font-medium text-slate-200">{{ card.sources_selected }}{% if card.sources_skipped %} <span class="text-rose-400 text-xs" title="{{ t(request, 'subs_skipped_hint', default='0 live proxies in the last 5 runs of this group: tests paused until the source changes') }}">({{ card.sources_skipped }} {{ t(request, 'ratings_paused', default='paused') }})</span>{% endif %}</div>
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_schedule', default='Schedule') }}</div>
+                    <div class="font-medium text-slate-200">
+                        {% if rating.schedule_interval_minutes > 0 %}{{ t(request, 'dash_every', default='Every') }} {{ rating.schedule_interval_minutes }} {{ t(request, 'settings_minutes', default='min') }}{% else %}{{ t(request, 'ratings_manual', default='Manual') }}{% endif %}
+                    </div>
+                    {% if card.next_fetch %}<div class="text-[11px] text-slate-500 local-time" data-ts="{{ card.next_fetch }}"></div>{% endif %}
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50 col-span-2 sm:col-span-3">
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_last_fetch', default='Last fetch') }}</div>
+                    <div class="text-slate-300 text-xs">
+                        {% if rating.last_fetch_at %}<span class="local-time" data-ts="{{ rating.last_fetch_at }}"></span> — {% endif %}{{ rating.last_fetch_status or '—' }}
                     </div>
                 </div>
                 <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
-                    <div class="text-xs text-slate-500 mb-1">Consensus Mode</div>
-                    <div class="text-sm font-medium text-slate-200">{{ 'Enabled' if rating.consensus_only else 'Disabled' }}</div>
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_max', default='Max proxies') }}</div>
+                    <div class="font-medium text-slate-200">{{ rating.max_proxies if rating.max_proxies > 0 else '∞' }}</div>
                 </div>
                 <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
-                    <div class="text-xs text-slate-500 mb-1">Geo Top-N</div>
-                    <div class="text-sm font-medium text-slate-200">{{ rating.geo_top_n }}</div>
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_min_speed', default='Min DL / UL') }}</div>
+                    <div class="font-medium text-slate-200">{{ rating.min_dl_kbps }} / {{ rating.min_ul_kbps }} KB/s</div>
+                </div>
+                <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/50">
+                    <div class="text-xs text-slate-500 mb-1">{{ t(request, 'ratings_mode', default='Mode') }}</div>
+                    <div class="font-medium text-slate-200 text-xs">
+                        {{ 'Consensus' if rating.consensus_only else 'Any node' }}{% if rating.geo_check_enabled %} · GeoIP top-{{ rating.geo_top_n }}{% endif %}
+                    </div>
                 </div>
             </div>
 
-            <!-- Linked Nodes -->
-            <div class="mt-4">
-                <h4 class="text-sm font-semibold text-slate-300 mb-3 flex items-center justify-between">
-                    <span>Linked Worker Nodes</span>
-                    <span class="text-xs font-normal text-slate-500">{{ rating_nodes_map.get(rating.id, [])|length }} node(s)</span>
-                </h4>
-                
-                <div class="space-y-2 mb-4 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                    {% set linked_ids = rating_nodes_map.get(rating.id, []) %}
-                    {% for node_id in linked_ids %}
-                        {% set node = nodes|selectattr("id", "equalto", node_id)|first %}
-                        {% if node %}
-                        <div class="flex items-center justify-between p-2 rounded-lg bg-slate-800/50 border border-slate-700/50">
-                            <div class="flex items-center gap-2">
-                                <div class="w-2 h-2 rounded-full {% if node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
-                                <span class="text-sm text-slate-200 font-medium">{{ node.name }}</span>
-                                <span class="text-xs text-slate-500">{{ node.region }}</span>
-                            </div>
-                            <form action="/ratings/{{ rating.id }}/remove-node/{{ node.id }}" method="post" class="inline">
-                                <button type="submit" class="text-rose-400 hover:text-rose-300 text-xs px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 transition-colors">Remove</button>
-                            </form>
-                        </div>
-                        {% endif %}
-                    {% else %}
-                        <div class="text-sm text-slate-500 text-center py-4 bg-slate-800/20 rounded-lg border border-dashed border-slate-700/50">
-                            No nodes assigned to this rating group yet.
-                        </div>
+            <h4 class="text-sm font-semibold text-slate-300 mb-3 flex items-center justify-between">
+                <span>{{ t(request, 'ratings_nodes', default='Worker nodes') }}</span>
+                <span class="text-xs font-normal text-slate-500">{{ rating_nodes_map.get(rating.id, [])|length }}</span>
+            </h4>
+            <div class="space-y-2 mb-4 max-h-48 overflow-y-auto pr-1">
+                {% for node in nodes if node.id in rating_nodes_map.get(rating.id, []) %}
+                <div class="flex items-center justify-between p-2 rounded-lg bg-slate-800/50 border border-slate-700/50">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full {% if node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
+                        <span class="text-sm text-slate-200 font-medium">{{ node.name }}</span>
+                        <span class="text-xs text-slate-500">{{ node.region }}</span>
+                    </div>
+                    <form action="/ratings/{{ rating.id }}/remove-node/{{ node.id }}" method="post" onsubmit="return confirm('{{ t(request, 'ratings_remove_node_confirm', default='Remove the node from this group? Its results in the group are dropped.') }}');">
+                        <button type="submit" class="text-rose-400 text-xs px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20">{{ t(request, 'ratings_remove', default='Remove') }}</button>
+                    </form>
+                </div>
+                {% else %}
+                <div class="text-sm text-slate-500 text-center py-4 bg-slate-800/20 rounded-lg border border-dashed border-slate-700/50">{{ t(request, 'ratings_no_nodes', default='No nodes in this group yet.') }}</div>
+                {% endfor %}
+            </div>
+            <form method="post" class="flex gap-2" onsubmit="if(!this.node.value){return false;} this.action='/ratings/{{ rating.id }}/add-node/'+this.node.value;">
+                <select name="node" class="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300 outline-none">
+                    <option value="" selected disabled>{{ t(request, 'ratings_select_node', default='Select a node to add…') }}</option>
+                    {% for node in nodes if node.id not in rating_nodes_map.get(rating.id, []) %}
+                    <option value="{{ node.id }}">{{ node.name }} ({{ node.region }}) — {{ 'online' if node.is_online else 'offline' }}</option>
                     {% endfor %}
-                </div>
-
-                <!-- Add Node form -->
-                <form action="#" method="post" onsubmit="event.preventDefault(); document.getElementById('addNodeForm_{{ rating.id }}').action = '/ratings/{{ rating.id }}/add-node/' + document.getElementById('nodeSelect_{{ rating.id }}').value; document.getElementById('addNodeForm_{{ rating.id }}').submit();" id="addNodeForm_{{ rating.id }}" class="flex gap-2">
-                    <select id="nodeSelect_{{ rating.id }}" class="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300 outline-none focus:border-indigo-500">
-                        <option value="" disabled selected>Select a node to add...</option>
-                        {% for node in nodes %}
-                            {% if node.id not in rating_nodes_map.get(rating.id, []) %}
-                                <option value="{{ node.id }}">{{ node.name }} ({{ node.region }}) - {% if node.is_online %}Online{% else %}Offline{% endif %}</option>
-                            {% endif %}
-                        {% endfor %}
-                    </select>
-                    <button type="submit" class="px-3 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white border border-indigo-500/30 transition-colors text-sm font-medium">Add</button>
-                </form>
-            </div>
+                </select>
+                <button type="submit" class="px-3 py-2 rounded-lg bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white border border-indigo-500/30 text-sm font-medium">{{ t(request, 'subs_add_btn', default='Add') }}</button>
+            </form>
         </div>
         {% else %}
         <div class="col-span-full glass p-12 rounded-2xl text-center">
-            <div class="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center mx-auto mb-4 border border-slate-700/50">
-                <svg class="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"/>
-                </svg>
-            </div>
-            <h3 class="text-xl font-bold text-slate-300">No Rating Groups</h3>
-            <p class="text-slate-500 mt-2">Create a rating group to serve proxies tested by a specific subset of nodes.</p>
-            <button onclick="document.getElementById('addRatingModal').classList.remove('hidden')" class="mt-6 px-6 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400 transition-colors">
-                Create your first Rating Group
-            </button>
+            <h3 class="text-xl font-bold text-slate-300">{{ t(request, 'ratings_none', default='No rating groups') }}</h3>
+            <p class="text-slate-500 mt-2">{{ t(request, 'ratings_none_desc', default='Nodes without a group stay idle. Create a group to start testing.') }}</p>
         </div>
         {% endfor %}
     </div>
 </div>
 
-<!-- Add Rating Modal -->
-<div id="addRatingModal" class="fixed inset-0 z-50 hidden">
-    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="this.parentElement.classList.add('hidden')"></div>
-    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
-        <div class="glass rounded-2xl border border-slate-700 shadow-2xl overflow-hidden">
-            <div class="p-6 border-b border-slate-700">
-                <h2 class="text-xl font-bold text-white">Add Rating Group</h2>
+<!-- Group settings modal (create + edit) -->
+<div id="groupModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="closeModal('groupModal')"></div>
+    <div class="absolute inset-x-0 top-6 bottom-6 mx-auto w-full max-w-4xl px-4">
+        <form id="groupForm" action="/ratings/save" method="post" class="glass rounded-2xl border border-slate-700 shadow-2xl h-full flex flex-col">
+            <input type="hidden" name="rating_id" id="f_rating_id">
+            <div class="p-5 border-b border-slate-700 flex justify-between items-center">
+                <h2 class="text-xl font-bold text-white" id="groupFormTitle"></h2>
+                <button type="button" onclick="closeModal('groupModal')" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
-            <form action="/ratings/add" method="post" class="p-6 space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Name</label>
-                    <input type="text" name="name" required placeholder="e.g. Premium Nodes"
-                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Webhook Path</label>
-                    <div class="flex items-center gap-2">
-                        <span class="text-slate-500">/</span>
-                        <input type="text" name="webhook_path" required placeholder="premium-proxies"
-                            class="flex-1 px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white font-mono outline-none">
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Max Proxies</label>
-                        <input type="number" name="max_proxies" value="0" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Geo Top-N</label>
-                        <input type="number" name="geo_top_n" value="1" min="1"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Min DL (KB/s)</label>
-                        <input type="number" name="min_dl_kbps" value="0" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Min UL (KB/s)</label>
-                        <input type="number" name="min_ul_kbps" value="0" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Rename Prefix</label>
-                    <input type="text" name="rename_prefix" placeholder="e.g. PREM"
-                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                </div>
-                
-                <label class="flex items-center gap-3 cursor-pointer pt-2">
-                    <input type="checkbox" name="consensus_only" value="1"
-                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
-                    <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
-                </label>
-                <label class="flex items-center gap-3 cursor-pointer pt-2">
-                    <input type="checkbox" name="geo_check_enabled" value="1"
-                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
-                    <span class="text-sm text-slate-200">Country detection (GeoIP) - Distribute best proxy per country</span>
-                </label>
-                
-                <div class="pt-4 flex justify-end gap-3">
-                    <button type="button" onclick="document.getElementById('addRatingModal').classList.add('hidden')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">Cancel</button>
-                    <button type="submit" class="btn-primary px-5 py-2.5 rounded-xl text-white font-medium">Create Rating</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
+            <div class="flex-1 overflow-y-auto p-5 space-y-6">
 
-<!-- Edit Rating Modal -->
-<div id="editRatingModal" class="fixed inset-0 z-50 hidden">
-    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="this.parentElement.classList.add('hidden')"></div>
-    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
-        <div class="glass rounded-2xl border border-slate-700 shadow-2xl overflow-hidden">
-            <div class="p-6 border-b border-slate-700">
-                <h2 class="text-xl font-bold text-white">Edit Rating Group</h2>
+                <section>
+                    <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'grp_general', default='General') }}</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="block text-sm text-slate-300">{{ t(request, 'grp_name', default='Name') }}
+                            <input type="text" name="name" id="f_name" required class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'grp_webhook', default='Webhook path') }}
+                            <div class="flex items-center gap-2 mt-1"><span class="text-slate-500">/</span>
+                            <input type="text" name="webhook_path" id="f_webhook_path" required pattern="[A-Za-z0-9._~\-]+" class="{{ input }} font-mono"></div></label>
+                    </div>
+                </section>
+
+                <section>
+                    <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'grp_output', default='Webhook output') }}</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <label class="block text-sm text-slate-300">{{ t(request, 'ratings_max', default='Max proxies') }}
+                            <input type="number" min="0" name="max_proxies" id="f_max_proxies" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">Min DL (KB/s)
+                            <input type="number" min="0" name="min_dl_kbps" id="f_min_dl_kbps" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">Min UL (KB/s)
+                            <input type="number" min="0" name="min_ul_kbps" id="f_min_ul_kbps" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">Geo Top-N
+                            <input type="number" min="1" name="geo_top_n" id="f_geo_top_n" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300 col-span-2">{{ t(request, 'grp_rename', default='Rename prefix') }}
+                            <input type="text" name="rename_prefix" id="f_rename_prefix" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300 col-span-2">{{ t(request, 'grp_excluded_countries', default='Excluded countries (comma-separated)') }}
+                            <input type="text" name="excluded_countries" id="f_excluded_countries" placeholder="Украина, Китай" class="{{ input }} mt-1"></label>
+                    </div>
+                    <div class="flex flex-wrap gap-6 mt-3">
+                        <label class="flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" name="consensus_only" value="1" id="f_consensus_only" class="w-4 h-4">{{ t(request, 'grp_consensus', default='Consensus only (all online nodes of the group)') }}</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" name="geo_check_enabled" value="1" id="f_geo_check_enabled" class="w-4 h-4">{{ t(request, 'grp_geo', default='GeoIP: best proxies per country') }}</label>
+                    </div>
+                </section>
+
+                <section>
+                    <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+                        <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider">{{ t(request, 'ratings_sources', default='Sources') }} <span id="srcCount" class="text-slate-500 normal-case font-normal"></span></h3>
+                        <div class="flex items-center gap-2">
+                            <input type="search" id="srcFilter" placeholder="{{ t(request, 'grp_filter', default='Filter…') }}" class="px-3 py-1.5 rounded-lg bg-slate-800/60 border border-slate-600/30 text-white text-xs outline-none">
+                            <button type="button" onclick="setSources(true)" class="px-2 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-white">{{ t(request, 'grp_all', default='All') }}</button>
+                            <button type="button" onclick="setSources(false)" class="px-2 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-white">{{ t(request, 'grp_none', default='None') }}</button>
+                        </div>
+                    </div>
+                    <div id="srcList" class="max-h-64 overflow-y-auto rounded-xl border border-slate-700/50 divide-y divide-slate-700/30">
+                        {% for sub in subs %}
+                        <label class="src-row flex items-center gap-3 px-3 py-2 text-xs hover:bg-slate-800/40" data-url="{{ sub.url|lower }}">
+                            <input type="checkbox" name="source_ids" value="{{ sub.id }}" class="src-box w-4 h-4 flex-shrink-0">
+                            <span class="font-mono text-slate-300 break-all flex-1">{{ sub.url }}</span>
+                            <span class="text-slate-500 whitespace-nowrap">{{ sub.last_config_count }}</span>
+                            {% if not sub.is_enabled %}<span class="text-amber-400 whitespace-nowrap">OFF</span>{% endif %}
+                        </label>
+                        {% else %}
+                        <div class="p-4 text-sm text-slate-500">{{ t(request, 'subs_none', default='No subscriptions yet.') }}</div>
+                        {% endfor %}
+                    </div>
+                    <label class="flex items-center gap-2 text-sm text-slate-200 mt-3"><input type="checkbox" name="auto_add_new_sources" value="1" id="f_auto_add_new_sources" class="w-4 h-4">{{ t(request, 'grp_auto_add', default='Add new sources automatically') }}</label>
+                </section>
+
+                <section>
+                    <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'grp_protocols', default='Protocols') }}</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {% for key, label in protocol_labels.items() %}
+                        <label class="flex items-center gap-2 bg-slate-800/50 rounded-lg p-2 text-sm text-white"><input type="checkbox" name="proto_{{ key }}" value="1" id="f_proto_{{ key }}" class="w-4 h-4">{{ label }}</label>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <section>
+                        <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'dash_scheduler', default='Auto-Fetch Scheduler') }}</h3>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'settings_fetch_interval', default='Fetch Interval (minutes)') }}
+                            <input type="number" min="0" max="10080" name="schedule_interval_minutes" id="f_schedule_interval_minutes" class="{{ input }} mt-1"></label>
+                        <p class="text-xs text-slate-500 mt-1">{{ t(request, 'grp_interval_hint', default='0 = manual only. Every fetch starts a new test run on the group nodes.') }}</p>
+                    </section>
+                    <section>
+                        <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'settings_retention_title', default='Proxy Retention') }}</h3>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'settings_retention_cycles', default='Retention Cycles (N)') }}
+                            <input type="number" min="0" max="100" name="good_proxy_retention_cycles" id="f_good_proxy_retention_cycles" class="{{ input }} mt-1"></label>
+                        <p class="text-xs text-slate-500 mt-1">{{ t(request, 'grp_retention_hint', default='A node keeps testing a proxy that passed on it for N fetches after it left the sources.') }}</p>
+                    </section>
+                    <section>
+                        <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'settings_ban_mgmt', default='Ban Management') }}</h3>
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="block text-sm text-slate-300">{{ t(request, 'grp_ban_hours', default='Ban, h') }}
+                                <input type="number" min="0" max="8760" name="ban_duration_hours" id="f_ban_duration_hours" class="{{ input }} mt-1"></label>
+                            <label class="block text-sm text-slate-300">{{ t(request, 'grp_ban_after', default='After N fails') }}
+                                <input type="number" min="1" max="100" name="ban_after_n_failures" id="f_ban_after_n_failures" class="{{ input }} mt-1"></label>
+                        </div>
+                        <p class="text-xs text-slate-500 mt-1">{{ t(request, 'grp_ban_hint', default='Per node: N failures in a row ban the proxy for that node only. 0 h = no bans.') }}</p>
+                    </section>
+                </div>
+
+                <section>
+                    <h3 class="text-sm font-semibold text-indigo-300 uppercase tracking-wider mb-3">{{ t(request, 'settings_worker_params', default='Worker Test Parameters') }}</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <label class="block text-sm text-slate-300">{{ t(request, 'settings_ping_threshold', default='Ping Threshold (ms)') }}
+                            <input type="number" min="50" max="10000" name="ping_threshold_ms" id="f_ping_threshold_ms" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'settings_concurrent', default='Concurrent Checks') }}
+                            <input type="number" min="1" max="500" name="concurrent_checks_limit" id="f_concurrent_checks_limit" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'grp_timeout', default='HTTP timeout (s)') }}
+                            <input type="number" min="1" max="60" name="http_timeout_s" id="f_http_timeout_s" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'grp_speed_top', default='Speed test top-N') }}
+                            <input type="number" min="0" max="50000" name="speed_test_top_n" id="f_speed_test_top_n" class="{{ input }} mt-1"></label>
+                        <label class="block text-sm text-slate-300">{{ t(request, 'grp_chunk', default='Chunk size') }}
+                            <input type="number" min="0" max="10000" name="chunk_size" id="f_chunk_size" class="{{ input }} mt-1"></label>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-1">{{ t(request, 'grp_chunk_hint', default='Results reach the rating after each chunk; 0 = one chunk. Speed test top-N is per chunk, 0 = off.') }}</p>
+                </section>
             </div>
-            <form id="editRatingForm" method="post" class="p-6 space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Name</label>
-                    <input type="text" name="name" id="edit_name" required
-                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Webhook Path</label>
-                    <div class="flex items-center gap-2">
-                        <span class="text-slate-500">/</span>
-                        <input type="text" name="webhook_path" id="edit_webhook_path" required
-                            class="flex-1 px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white font-mono outline-none">
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Max Proxies</label>
-                        <input type="number" name="max_proxies" id="edit_max_proxies" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Geo Top-N</label>
-                        <input type="number" name="geo_top_n" id="edit_geo_top_n" min="1"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Min DL (KB/s)</label>
-                        <input type="number" name="min_dl_kbps" id="edit_min_dl_kbps" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-slate-300 mb-1">Min UL (KB/s)</label>
-                        <input type="number" name="min_ul_kbps" id="edit_min_ul_kbps" min="0"
-                            class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                    </div>
-                </div>
-                
-                <div>
-                    <label class="block text-sm font-medium text-slate-300 mb-1">Rename Prefix</label>
-                    <input type="text" name="rename_prefix" id="edit_rename_prefix"
-                        class="w-full px-4 py-2.5 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white outline-none">
-                </div>
-                
-                <label class="flex items-center gap-3 cursor-pointer pt-2">
-                    <input type="checkbox" name="consensus_only" id="edit_consensus_only" value="1"
-                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
-                    <span class="text-sm text-slate-200">Consensus-only mode (require all linked online nodes)</span>
-                </label>
-                <label class="flex items-center gap-3 cursor-pointer pt-2">
-                    <input type="checkbox" name="geo_check_enabled" id="edit_geo_check_enabled" value="1"
-                        class="w-5 h-5 rounded bg-slate-800 border border-slate-600 text-indigo-500 focus:ring-indigo-500">
-                    <span class="text-sm text-slate-200">Country detection (GeoIP) - Distribute best proxy per country</span>
-                </label>
-                
-                <div class="pt-4 flex justify-end gap-3">
-                    <button type="button" onclick="document.getElementById('editRatingModal').classList.add('hidden')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">Cancel</button>
-                    <button type="submit" class="btn-primary px-5 py-2.5 rounded-xl text-white font-medium">Save Changes</button>
-                </div>
-            </form>
-        </div>
+            <div class="p-5 border-t border-slate-700 flex justify-end gap-3">
+                <button type="button" onclick="closeModal('groupModal')" class="px-5 py-2.5 rounded-xl text-slate-300 hover:text-white font-medium">{{ t(request, 'grp_cancel', default='Cancel') }}</button>
+                <button type="submit" class="btn-primary px-6 py-2.5 rounded-xl text-white font-medium">{{ t(request, 'settings_save', default='Save') }}</button>
+            </div>
+        </form>
     </div>
 </div>
 
 <!-- View Proxies Modal -->
 <div id="viewProxiesModal" class="fixed inset-0 z-[60] hidden">
-    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="this.parentElement.classList.add('hidden')"></div>
+    <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onclick="closeModal('viewProxiesModal')"></div>
     <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-6xl max-h-[90vh] flex flex-col">
         <div class="glass rounded-2xl border border-slate-700 shadow-2xl flex flex-col flex-1 min-h-0">
             <div class="p-6 border-b border-slate-700 flex justify-between items-center">
                 <h2 class="text-xl font-bold text-white">Proxies: <span id="viewProxiesTitle" class="text-indigo-400"></span></h2>
-                <button onclick="document.getElementById('viewProxiesModal').classList.add('hidden')" class="text-slate-400 hover:text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                </button>
+                <button onclick="closeModal('viewProxiesModal')" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
             </div>
-            <div id="proxiesTableContainer" class="flex-1 overflow-y-auto p-0 relative">
-                <!-- Content will be loaded here via JS -->
-                <div id="proxiesLoading" class="absolute inset-0 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm z-10 hidden">
-                    <div class="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                </div>
-            </div>
+            <div id="proxiesTableContainer" class="flex-1 overflow-y-auto p-0 relative"></div>
         </div>
     </div>
 </div>
 
-<div id="toast" class="fixed bottom-4 right-4 transform translate-y-20 opacity-0 transition-all duration-300 bg-emerald-500 text-white px-6 py-3 rounded-xl shadow-lg font-medium shadow-emerald-500/20 z-50 flex items-center gap-2">
-    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-    URL Copied!
-</div>
-
-<style>
-    /* Custom scrollbar for linked nodes list */
-    .custom-scrollbar::-webkit-scrollbar {
-        width: 6px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-track {
-        background: rgba(30, 41, 59, 0.5); 
-        border-radius: 10px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: rgba(99, 102, 241, 0.5); 
-        border-radius: 10px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: rgba(99, 102, 241, 0.8); 
-    }
-</style>
+<div id="toast" class="fixed bottom-4 right-4 transform translate-y-20 opacity-0 transition-all duration-300 bg-emerald-500 text-white px-6 py-3 rounded-xl shadow-lg font-medium z-50">URL copied</div>
 
 <script>
-async function viewProxies(ratingId, ratingName) {
-    document.getElementById('viewProxiesTitle').textContent = ratingName;
-    document.getElementById('viewProxiesModal').classList.remove('hidden');
-    document.getElementById('proxiesLoading').classList.remove('hidden');
-    const container = document.getElementById('proxiesTableContainer');
-    
-    Array.from(container.children).forEach(child => {
-        if (child.id !== 'proxiesLoading') {
-            child.remove();
-        }
-    });
+const GROUPS = {{ cards|map(attribute='payload')|list|tojson }};
+const NEW_GROUP = {{ new_group_defaults|tojson }};
+const PROTOCOLS = {{ protocol_labels.keys()|list|tojson }};
+const T_ADD = {{ t(request, 'ratings_add', default='Add Rating Group')|tojson }};
+const T_EDIT = {{ t(request, 'ratings_settings', default='Group settings')|tojson }};
 
-    try {
-        const response = await fetch(`/ratings/${ratingId}/proxies`);
-        if (response.ok) {
-            const html = await response.text();
-            container.insertAdjacentHTML('beforeend', html);
-        } else {
-            container.insertAdjacentHTML('beforeend', '<div class="p-6 text-center text-rose-400">Failed to load proxies.</div>');
-        }
-    } catch (err) {
-        container.insertAdjacentHTML('beforeend', '<div class="p-6 text-center text-rose-400">Error loading proxies.</div>');
-    } finally {
-        document.getElementById('proxiesLoading').classList.add('hidden');
-    }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function updateSrcCount() {
+    const boxes = document.querySelectorAll('.src-box');
+    const n = [...boxes].filter(b => b.checked).length;
+    document.getElementById('srcCount').textContent = `(${n} / ${boxes.length})`;
 }
 
-function editRating(id, name, path, maxP, minDL, minUL, prefix, consensus, geoCheck, geoTopN) {
-    document.getElementById('editRatingForm').action = '/ratings/edit/' + id;
-    document.getElementById('edit_name').value = name;
-    document.getElementById('edit_webhook_path').value = path;
-    document.getElementById('edit_max_proxies').value = maxP;
-    document.getElementById('edit_min_dl_kbps').value = minDL;
-    document.getElementById('edit_min_ul_kbps').value = minUL;
-    document.getElementById('edit_rename_prefix').value = prefix;
-    document.getElementById('edit_geo_top_n').value = geoTopN;
-    document.getElementById('edit_consensus_only').checked = consensus;
-    document.getElementById('edit_geo_check_enabled').checked = geoCheck;
-    
-    document.getElementById('editRatingModal').classList.remove('hidden');
+function setSources(on) {
+    document.querySelectorAll('.src-row').forEach(row => {
+        if (row.style.display !== 'none') row.querySelector('.src-box').checked = on;
+    });
+    updateSrcCount();
+}
+
+function openGroupForm(id) {
+    const g = id === null ? NEW_GROUP : GROUPS.find(x => x.id === id);
+    document.getElementById('groupFormTitle').textContent = id === null ? T_ADD : T_EDIT + ': ' + g.name;
+    document.getElementById('f_rating_id').value = id === null ? '' : id;
+    const fields = ['name', 'webhook_path', 'max_proxies', 'min_dl_kbps', 'min_ul_kbps', 'geo_top_n', 'rename_prefix',
+        'excluded_countries', 'schedule_interval_minutes', 'good_proxy_retention_cycles', 'ban_duration_hours',
+        'ban_after_n_failures', 'ping_threshold_ms', 'concurrent_checks_limit', 'http_timeout_s',
+        'speed_test_top_n', 'chunk_size'];
+    fields.forEach(f => { document.getElementById('f_' + f).value = g[f] ?? ''; });
+    if (id === null) document.getElementById('f_webhook_path').value = Math.random().toString(36).slice(2, 14);
+    ['consensus_only', 'geo_check_enabled', 'auto_add_new_sources'].forEach(f => {
+        document.getElementById('f_' + f).checked = !!g[f];
+    });
+    PROTOCOLS.forEach(p => { document.getElementById('f_proto_' + p).checked = !!(g.protocols || {})[p]; });
+    const selected = new Set(g.source_ids || []);
+    document.querySelectorAll('.src-box').forEach(b => { b.checked = selected.has(parseInt(b.value)); });
+    document.getElementById('srcFilter').value = '';
+    document.querySelectorAll('.src-row').forEach(r => r.style.display = '');
+    updateSrcCount();
+    document.getElementById('groupModal').classList.remove('hidden');
+}
+
+document.getElementById('srcFilter').addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('.src-row').forEach(r => { r.style.display = !q || r.dataset.url.includes(q) ? '' : 'none'; });
+});
+document.querySelectorAll('.src-box').forEach(b => b.addEventListener('change', updateSrcCount));
+
+async function viewProxies(ratingId, ratingName) {
+    document.getElementById('viewProxiesTitle').textContent = ratingName;
+    const container = document.getElementById('proxiesTableContainer');
+    container.innerHTML = '<div class="p-10 flex justify-center"><div class="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>';
+    document.getElementById('viewProxiesModal').classList.remove('hidden');
+    try {
+        const response = await fetch(`/ratings/${ratingId}/proxies`);
+        container.innerHTML = response.ok ? await response.text() : '<div class="p-6 text-center text-rose-400">Failed to load proxies.</div>';
+    } catch (err) {
+        container.innerHTML = '<div class="p-6 text-center text-rose-400">Error loading proxies.</div>';
+    }
 }
 
 function copyWebhook(url) {
-    function onSuccess() {
+    const done = () => {
         const toast = document.getElementById('toast');
         toast.classList.remove('translate-y-20', 'opacity-0');
-        setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
-    }
-
-    function fallbackCopy(text) {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try {
-            document.execCommand('copy');
-            onSuccess();
-        } catch(e) {
-            alert('Failed to copy: ' + text);
-        }
+        setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 2500);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(url).then(done).catch(() => prompt('URL', url));
+    } else {
+        const ta = document.createElement('textarea');
+        ta.value = url; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { prompt('URL', url); }
         document.body.removeChild(ta);
     }
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(onSuccess).catch(function() {
-            fallbackCopy(url);
-        });
-    } else {
-        fallbackCopy(url);
-    }
 }
+
+document.querySelectorAll('.local-time').forEach(el => {
+    const d = new Date(el.dataset.ts);
+    if (!isNaN(d)) el.textContent = d.toLocaleString();
+});
 </script>
 {% endblock %}

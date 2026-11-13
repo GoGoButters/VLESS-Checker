@@ -1,4 +1,3 @@
-
 {% extends "base.html" %}
 {% block title %}{{ t(request, 'subs_title') }} — {{ t(request, 'app_title') }}{% endblock %}
 
@@ -6,77 +5,79 @@
 <div class="flex items-center justify-between mb-8">
     <div>
         <h1 class="text-3xl font-bold text-white">{{ t(request, 'subs_title') }}</h1>
-        <p class="text-slate-400 mt-1">{{ t(request, 'subs_desc', default='Manage your Proxy subscription sources') }}</p>
+        <p class="text-slate-400 mt-1">{{ t(request, 'subs_desc_v2', default='Source catalog. Each rating group picks its own sources on the Ratings page.') }}</p>
     </div>
-    <span class="text-sm text-slate-500">{{ subs|length }} {{ t(request, 'subs_source', default='source') }}{{ 's' if subs|length != 1 else '' }}</span>
+    <span class="text-sm text-slate-500">{{ subs|length }}</span>
 </div>
 
-<!-- Add Subscription Form -->
 <div class="glass rounded-2xl p-6 mb-8 glow-accent">
     <h2 class="text-lg font-semibold text-white mb-4">{{ t(request, 'subs_add_url', default='Add Subscription URL') }}</h2>
     <form method="POST" action="/subscriptions/add" class="flex gap-3">
-        <input type="url" name="url" required
-            class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white placeholder-slate-500 outline-none text-sm"
-            placeholder="https://example.com/subscription/vless">
-        <button type="submit" class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-            </svg>
+        <textarea name="url" required rows="1"
+            class="flex-1 px-4 py-3 rounded-xl bg-slate-800/60 border border-slate-600/30 text-white placeholder-slate-500 outline-none text-sm font-mono"
+            placeholder="https://example.com/sub  ({{ t(request, 'subs_add_many', default='several URLs: one per line') }})"></textarea>
+        <button type="submit" class="btn-primary px-6 py-3 rounded-xl text-white font-semibold text-sm self-start">
             {{ t(request, 'subs_add_btn', default='Add') }}
         </button>
     </form>
+    <p class="text-xs text-slate-500 mt-2">{{ t(request, 'subs_auto_add_hint', default='New sources are added to every group with “add new sources automatically” enabled.') }}</p>
 </div>
 
-<!-- Subscriptions List -->
-<div class="glass rounded-2xl overflow-hidden">
+<div class="glass rounded-2xl overflow-x-auto">
     {% if subs %}
     <table class="w-full">
         <thead>
-            <tr class="border-b border-slate-700/30">
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'subs_col_url', default='URL') }}</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">{{ t(request, 'subs_col_configs', default='Configs') }}</th>
-                <th class="text-left px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider w-48">{{ t(request, 'subs_col_added', default='Added') }}</th>
-                <th class="px-6 py-4 w-32 text-center">{{ t(request, 'subs_col_status', default='Status') }}</th>
-                <th class="px-6 py-4 w-20"></th>
+            <tr class="border-b border-slate-700/30 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                <th class="text-left px-6 py-4">{{ t(request, 'subs_col_url', default='URL') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'subs_col_configs', default='Configs') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'subs_col_fetch', default='Last fetch') }}</th>
+                <th class="text-left px-4 py-4">{{ t(request, 'subs_col_groups', default='Groups') }}</th>
+                <th class="px-4 py-4 text-center">{{ t(request, 'subs_col_status', default='Status') }}</th>
+                <th class="px-4 py-4"></th>
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-700/20">
             {% for sub in subs %}
-            <tr class="table-row">
+            <tr class="table-row align-top">
                 <td class="px-6 py-4">
-                    <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 rounded-lg {{ 'bg-indigo-500/10' if sub.is_enabled else 'bg-slate-500/10' }} flex items-center justify-center flex-shrink-0">
-                            <svg class="w-4 h-4 {{ 'text-indigo-400' if sub.is_enabled else 'text-slate-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-                            </svg>
-                        </div>
-                        <span class="text-sm text-slate-200 truncate max-w-lg font-mono">{{ sub.url }}</span>
-                    </div>
+                    <span class="text-sm text-slate-200 font-mono break-all">{{ sub.url }}</span>
+                    <div class="text-[11px] text-slate-500 mt-1">{{ t(request, 'subs_col_added', default='Added') }} {{ sub.added_at[:10] }}</div>
                 </td>
-                <td class="px-6 py-4 text-sm text-slate-400">
-                    <span class="px-2 py-1 rounded-md bg-slate-800/60">{{ sub.last_config_count }}</span>
-                </td>
-                {# [SUB-STATS] доля живых прокси источника за 5 последних прогонов #}
-                <td class="px-6 py-4 text-sm">
-                    {# [SUB-AUTOSKIP] автоотключение тестов источника #}
-                    {% if sub.stats_disabled %}
-                    <div class="text-[10px] font-semibold text-rose-400 mt-1" title="0 живых прокси за 5 последних прогонов; источник опрашивается, тесты вернутся при смене набора конфигов">тесты выключены (0 живых)</div>
+                <td class="px-4 py-4 text-sm text-slate-400"><span class="px-2 py-1 rounded-md bg-slate-800/60">{{ sub.last_config_count }}</span></td>
+                <td class="px-4 py-4 text-xs whitespace-nowrap">
+                    {% if not sub.last_fetch_at %}
+                    <span class="text-slate-500">—</span>
+                    {% elif sub.last_fetch_ok %}
+                    <span class="text-emerald-400">OK</span> <span class="text-slate-500">{{ sub.last_fetch_at[:16].replace('T', ' ') }}</span>
+                    {% else %}
+                    <span class="text-rose-400" title="{{ sub.last_error }}">{{ t(request, 'subs_fetch_failed', default='failed') }}</span>
+                    <span class="text-slate-500">{{ sub.last_fetch_at[:16].replace('T', ' ') }}</span>
+                    <div class="text-[10px] text-rose-400/70 max-w-[220px] truncate" title="{{ sub.last_error }}">{{ sub.last_error }}</div>
                     {% endif %}
                 </td>
-                <td class="px-6 py-4 text-sm text-slate-400">{{ sub.added_at[:10] }}</td>
-                <td class="px-6 py-4 text-center">
+                <td class="px-4 py-4">
+                    <div class="flex flex-wrap gap-1">
+                    {% for u in usage.get(sub.id, []) %}
+                        <span class="px-2 py-0.5 rounded-md text-[11px] {{ 'bg-rose-500/10 text-rose-400' if u.skipped else 'bg-indigo-500/10 text-indigo-300' }}"
+                              {% if u.skipped %}title="{{ t(request, 'subs_skipped_hint', default='0 live proxies in the last 5 runs of this group: tests paused until the source changes') }}"{% endif %}>
+                            {{ u.name }}{% if u.skipped %} · {{ t(request, 'ratings_paused', default='paused') }}{% endif %}
+                        </span>
+                    {% else %}
+                        <span class="text-xs text-slate-500">—</span>
+                    {% endfor %}
+                    </div>
+                </td>
+                <td class="px-4 py-4 text-center">
                     <form method="POST" action="/subscriptions/toggle/{{ sub.id }}">
-                        <button type="submit" class="px-3 py-1 rounded-lg text-xs font-semibold transition-all {{ 'bg-green-500/20 text-green-400 hover:bg-green-500/30' if sub.is_enabled else 'bg-slate-700/50 text-slate-400 hover:bg-slate-700' }}">
+                        <button type="submit" class="px-3 py-1 rounded-lg text-xs font-semibold {{ 'bg-green-500/20 text-green-400 hover:bg-green-500/30' if sub.is_enabled else 'bg-slate-700/50 text-slate-400 hover:bg-slate-700' }}">
                             {{ 'ON' if sub.is_enabled else 'OFF' }}
                         </button>
                     </form>
                 </td>
-                <td class="px-6 py-4">
+                <td class="px-4 py-4">
                     <form method="POST" action="/subscriptions/delete/{{ sub.id }}" onsubmit="return confirm(`{{ t(request, 'subs_delete_confirm', default='Delete this subscription?') }}`)">
-                        <button type="submit" class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-all">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
+                        <button type="submit" class="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" title="Delete">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         </button>
                     </form>
                 </td>
@@ -85,14 +86,7 @@
         </tbody>
     </table>
     {% else %}
-    <div class="px-6 py-16 text-center">
-        <div class="w-16 h-16 rounded-2xl bg-slate-800/60 flex items-center justify-center mx-auto mb-4">
-            <svg class="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-            </svg>
-        </div>
-        <p class="text-slate-400 text-sm">{{ t(request, 'subs_none', default='No subscriptions yet. Add a Proxy subscription URL above.') }}</p>
-    </div>
+    <div class="px-6 py-16 text-center text-slate-400 text-sm">{{ t(request, 'subs_none', default='No subscriptions yet. Add a Proxy subscription URL above.') }}</div>
     {% endif %}
 </div>
 {% endblock %}

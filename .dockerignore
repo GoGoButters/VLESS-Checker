@@ -8,3 +8,5 @@ data/
 .venv/
 .git/
 .gitignore
+.opencode/
+tests/

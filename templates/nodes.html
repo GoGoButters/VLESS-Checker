@@ -9,126 +9,79 @@
         </div>
         <div class="glass-light px-5 py-3 rounded-xl border border-indigo-500/20">
             <div class="text-sm text-slate-400">{{ t(request, 'nodes_total_active', default='Total Active Nodes') }}</div>
-            <div class="text-2xl font-bold text-white flex items-center gap-2">
-                <div class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></div>
-                {{ nodes|selectattr('is_online', 'equalto', true)|list|length }} <span class="text-lg text-slate-500 font-normal">/ {{ nodes|length }}</span>
-            </div>
+            <div class="text-2xl font-bold text-white">{{ nodes|selectattr('is_online')|list|length }} <span class="text-lg text-slate-500 font-normal">/ {{ nodes|length }}</span></div>
         </div>
     </div>
 
-    <!-- Node Instructions -->
-    <div class="glass p-6 rounded-2xl border-l-4 border-l-indigo-500">
-        <h3 class="text-lg font-semibold text-white mb-2">{{ t(request, 'nodes_how_to_deploy', default='How to deploy a new Node') }}</h3>
-        <p class="text-sm text-slate-300 mb-4">{{ t(request, 'nodes_instructions', default='Nodes are headless Docker containers that pull proxy lists from this master panel, check them locally using Sing-Box, and report the results back. This allows you to build regional proxy lists and bypass DPI blocks from different IPs.') }}</p>
-        
-        <div class="bg-slate-900/50 rounded-xl p-4 font-mono text-xs text-slate-300 overflow-x-auto">
-            <div class="text-indigo-400 mb-1"># 1. {{ t(request, 'nodes_step_1', default='Clone the repository on your remote worker server:') }}</div>
-            <div>git clone https://github.com/GoGoButters/VLESS-Checker.git</div>
-            <div>cd VLESS-Checker/node</div>
-            <br>
-            <div class="text-indigo-400 mb-1"># 2. {{ t(request, 'nodes_step_2', default='Add your node token and master URL to docker-compose.yml:') }}</div>
-            <div>nano docker-compose.yml</div>
-            <div><span class="text-slate-500"># Set MASTER_URL=https://<span class="text-emerald-400">YOUR_PANEL_DOMAIN</span></span></div>
-            <div><span class="text-slate-500"># Set NODE_TOKEN=<span class="text-emerald-400">{{ settings.node_api_token if settings else 'NOT_SET' }}</span></span></div>
-            <br>
-            <div class="text-indigo-400 mb-1"># 3. {{ t(request, 'nodes_step_3', default='Build and run the node container') }}</div>
+    <details class="glass p-6 rounded-2xl border-l-4 border-l-indigo-500">
+        <summary class="text-lg font-semibold text-white cursor-pointer">{{ t(request, 'nodes_how_to_deploy', default='How to deploy a new Node') }}</summary>
+        <p class="text-sm text-slate-300 my-4">{{ t(request, 'nodes_instructions_v2', default='A node is a Docker container that pulls the proxies of its rating groups from this panel, checks them with sing-box / Xray-core and reports back. A node without a group stays idle.') }}</p>
+        <div class="bg-slate-900/50 rounded-xl p-4 font-mono text-xs text-slate-300 overflow-x-auto space-y-1">
+            <div>git clone https://github.com/GoGoButters/VLESS-Checker.git &amp;&amp; cd VLESS-Checker/node</div>
+            <div>cp .env.example .env &amp;&amp; nano .env</div>
+            <div class="text-slate-500"># MASTER_URL={{ request.base_url }}</div>
+            <div class="text-slate-500"># NODE_TOKEN=<span class="text-emerald-400">{{ settings.node_api_token if settings else 'NOT_SET' }}</span></div>
+            <div class="text-slate-500"># NODE_NAME=my-node</div>
             <div>docker compose up --build -d</div>
         </div>
-    </div>
+    </details>
 
-    <!-- Nodes List -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {% for node in nodes %}
-        <div class="glass p-6 rounded-2xl relative overflow-hidden group">
-            <div class="absolute top-0 left-0 w-full h-1 {% if node.status == 'testing' %}bg-indigo-500{% elif node.is_online %}bg-emerald-500{% else %}bg-rose-500{% endif %}"></div>
-            
+        {% set groups = stats.get(node.id, []) %}
+        {% set testing = groups|selectattr('status', 'equalto', 'testing')|list %}
+        <div class="glass p-6 rounded-2xl relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1 {% if not node.is_online %}bg-rose-500{% elif testing %}bg-indigo-500{% else %}bg-emerald-500{% endif %}"></div>
             <div class="flex justify-between items-start mb-4">
                 <div>
-                    <h3 class="text-xl font-bold text-white flex items-center gap-2">
-                        {{ node.name }}
-                    </h3>
-                    <div class="text-sm text-slate-400 font-medium">📍 {{ node.region }}</div>
+                    <h3 class="text-xl font-bold text-white">{{ node.name }}</h3>
+                    <div class="text-sm text-slate-400">📍 {{ node.region }}{% if node.protocol == 1 %} · <span class="text-amber-400" title="{{ t(request, 'nodes_legacy_hint', default='Old worker protocol: only the first group is tested. Update the node.') }}">legacy</span>{% endif %}</div>
                 </div>
-                <span class="px-2.5 py-1 rounded-full text-xs font-semibold
-                    {% if node.status == 'testing' %}
-                        bg-indigo-500/10 text-indigo-400 border border-indigo-500/20
-                    {% elif node.is_online %}
-                        bg-emerald-500/10 text-emerald-400 border border-emerald-500/20
-                    {% else %}
-                        bg-rose-500/10 text-rose-400 border border-rose-500/20
-                    {% endif %}">
-                    {% if node.status == 'testing' %}TESTING{% elif node.is_online %}ONLINE{% else %}OFFLINE{% endif %}
+                <span class="px-2.5 py-1 rounded-full text-xs font-semibold border
+                    {% if not node.is_online %}bg-rose-500/10 text-rose-400 border-rose-500/20{% elif testing %}bg-indigo-500/10 text-indigo-400 border-indigo-500/20{% else %}bg-emerald-500/10 text-emerald-400 border-emerald-500/20{% endif %}">
+                    {% if not node.is_online %}OFFLINE{% elif testing %}TESTING{% else %}ONLINE{% endif %}
                 </span>
             </div>
 
-            <div class="space-y-3 mb-6">
-                <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">{{ t(request, 'nodes_ip', default='IP Address:') }}</span>
-                    <span class="text-slate-200 font-mono">{{ node.ip }}</span>
-                </div>
-                <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">{{ t(request, 'nodes_last_heartbeat', default='Last Heartbeat:') }}</span>
-                    <span class="text-slate-200" title="{{ node.last_heartbeat }}">
-                        {% if node.last_heartbeat %}
-                            {{ node.last_heartbeat[:19].replace('T', ' ') }}
-                        {% else %}
-                            {{ t(request, 'nodes_never', default='Never') }}
-                        {% endif %}
-                    </span>
-                </div>
-                <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">{{ t(request, 'nodes_checked', default='Checked Proxies:') }}</span>
-                    <span class="text-slate-200 font-semibold">{{ node.proxies_checked }}</span>
-                </div>
-                <div class="flex justify-between text-sm">
-                    <span class="text-slate-400">{{ t(request, 'nodes_passed', default='Passed Proxies:') }}</span>
-                    <span class="text-emerald-400 font-semibold">{{ node.proxies_passed }}</span>
-                </div>
-                <div class="flex justify-between text-sm" title="Прокси, забаненные именно этой нодой: для остальных нод они остаются рабочими">
-                    <span class="text-slate-400">{{ t(request, 'nodes_banned', default='Banned for this node:') }}</span>
-                    {# [NODE-BAN] счётчик банов именно этой ноды #}
-                    <span class="{% if banned_by_node.get(node.id, 0) > 0 %}text-rose-400{% else %}text-slate-500{% endif %} font-semibold">{{ banned_by_node.get(node.id, 0) }}</span>
-                </div>
-                {% if node.status == 'testing' and node.total_chunks > 0 %}
-                <div class="mt-3">
-                    <div class="flex justify-between text-xs mb-1">
-                        <span class="text-indigo-400 font-medium">
-                            Testing chunk {{ node.current_chunk }}/{{ node.total_chunks }}
+            <div class="space-y-2 mb-4 text-sm">
+                <div class="flex justify-between"><span class="text-slate-400">{{ t(request, 'nodes_ip', default='IP Address:') }}</span><span class="text-slate-200 font-mono">{{ node.ip }}</span></div>
+                <div class="flex justify-between"><span class="text-slate-400">{{ t(request, 'nodes_last_heartbeat', default='Last Heartbeat:') }}</span>
+                    <span class="text-slate-200 local-time" data-ts="{{ node.last_heartbeat }}">{{ node.last_heartbeat[:19].replace('T', ' ') if node.last_heartbeat else '—' }}</span></div>
+            </div>
+
+            <div class="space-y-3 mb-5">
+                {% for g in groups %}
+                <div class="rounded-xl bg-slate-800/40 border border-slate-700/50 p-3">
+                    <div class="flex justify-between text-sm mb-1">
+                        <span class="text-white font-medium">{{ g.name }}</span>
+                        <span class="text-xs {{ 'text-indigo-300' if g.status == 'testing' else ('text-emerald-400' if g.done else 'text-amber-400') }}">
+                            {% if g.status == 'testing' %}{{ t(request, 'nodes_st_testing', default='testing') }}{% elif g.done %}{{ t(request, 'nodes_st_done', default='done') }}{% else %}{{ t(request, 'nodes_st_queued', default='queued') }}{% endif %}
                         </span>
-                        <span class="text-indigo-300">{{ ((node.current_chunk / node.total_chunks) * 100)|round|int }}%</span>
                     </div>
-                    <div class="w-full bg-slate-700/50 rounded-full h-2 overflow-hidden">
-                        <div class="bg-gradient-to-r from-indigo-500 to-violet-500 h-2 rounded-full transition-all duration-500 animate-pulse"
-                             style="width: {{ ((node.current_chunk / node.total_chunks) * 100)|round|int }}%">
-                        </div>
+                    {% set pct = ((g.tested / g.pool * 100) if g.pool else 0)|round|int %}
+                    <div class="w-full bg-slate-700/50 rounded-full h-1.5 overflow-hidden mb-2">
+                        <div class="h-1.5 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" style="width: {{ [pct, 100]|min }}%"></div>
+                    </div>
+                    <div class="grid grid-cols-3 text-xs text-slate-400">
+                        <span title="{{ t(request, 'nodes_tested_gen', default='Tested in the current run') }}">✓ {{ g.tested }} / {{ g.pool }}</span>
+                        <span class="text-emerald-400" title="{{ t(request, 'nodes_passed', default='Passed Proxies:') }}">● {{ g.passed }}</span>
+                        <span class="{{ 'text-rose-400' if g.banned else '' }}" title="{{ t(request, 'nodes_banned', default='Banned for this node:') }}">⛔ {{ g.banned }}</span>
                     </div>
                 </div>
-                {% endif %}
+                {% else %}
+                <div class="text-sm text-amber-400/80 text-center py-3 bg-slate-800/20 rounded-lg border border-dashed border-slate-700/50">{{ t(request, 'nodes_no_group', default='Not in any rating group — idle.') }} <a href="/ratings" class="underline">{{ t(request, 'nav_ratings', default='Ratings') }}</a></div>
+                {% endfor %}
             </div>
 
             <div class="flex gap-2">
-                <button onclick="forceTest({{ node.id }})" class="flex-1 px-4 py-2 rounded-lg text-sm font-medium glass-light hover:bg-amber-500/20 text-amber-300 transition-colors flex items-center justify-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    Run Test
-                </button>
-                <button onclick="copyWebhook('{{ request.base_url }}{{ settings.webhook_secret_path }}/node/{{ node.id }}')" class="flex-1 px-4 py-2 rounded-lg text-sm font-medium glass-light hover:bg-indigo-500/20 text-indigo-300 transition-colors flex items-center justify-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                    {{ t(request, 'nodes_copy_url', default='Copy List URL') }}
-                </button>
+                <button onclick="forceTest({{ node.id }})" class="flex-1 px-4 py-2 rounded-lg text-sm font-medium glass-light hover:bg-amber-500/20 text-amber-300" title="{{ t(request, 'nodes_run_hint', default='Re-test everything of all its groups without refetching sources') }}">{{ t(request, 'nodes_run_test', default='Run test') }}</button>
                 <form action="/nodes/delete/{{ node.id }}" method="post" onsubmit="return confirm(`{{ t(request, 'nodes_delete_confirm', default='Delete this node? All its proxy results will be lost.') }}`);">
-                    <button type="submit" class="px-4 py-2 rounded-lg text-sm font-medium border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white transition-colors">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                    </button>
+                    <button type="submit" class="px-4 py-2 rounded-lg text-sm font-medium border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white">✕</button>
                 </form>
             </div>
         </div>
         {% else %}
         <div class="col-span-full glass p-12 rounded-2xl text-center">
-            <div class="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center mx-auto mb-4 border border-slate-700/50">
-                <svg class="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
-                </svg>
-            </div>
             <h3 class="text-xl font-bold text-slate-300">{{ t(request, 'nodes_no_nodes', default='No Nodes Deployed yet') }}</h3>
             <p class="text-slate-500 mt-2">{{ t(request, 'nodes_no_nodes_desc', default='Follow the instructions above to connect your first worker node.') }}</p>
         </div>
@@ -136,58 +89,15 @@
     </div>
 </div>
 
-<div id="toast" class="fixed bottom-4 right-4 transform translate-y-20 opacity-0 transition-all duration-300 bg-emerald-500 text-white px-6 py-3 rounded-xl shadow-lg font-medium shadow-emerald-500/20 z-50 flex items-center gap-2">
-    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-    {{ t(request, 'nodes_copied', default='Node Proxy URL Copied!') }}
-</div>
-
 <script>
-function copyWebhook(url) {
-    function onSuccess() {
-        const toast = document.getElementById('toast');
-        toast.classList.remove('translate-y-20', 'opacity-0');
-        setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
-    }
-
-    function fallbackCopy(text) {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try {
-            document.execCommand('copy');
-            onSuccess();
-        } catch(e) {
-            alert('Failed to copy: ' + text);
-        }
-        document.body.removeChild(ta);
-    }
-
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(onSuccess).catch(function() {
-            fallbackCopy(url);
-        });
-    } else {
-        fallbackCopy(url);
-    }
-}
-
+document.querySelectorAll('.local-time').forEach(el => {
+    const d = new Date(el.dataset.ts);
+    if (el.dataset.ts && !isNaN(d)) el.textContent = d.toLocaleString();
+});
 async function forceTest(nodeId) {
-    try {
-        const resp = await fetch(`/api/node/${nodeId}/force-test`, { method: 'POST' });
-        if (resp.ok) {
-            setTimeout(() => location.reload(), 2000);
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            alert(data.detail || 'Failed to trigger test');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    }
+    const resp = await fetch(`/api/node/${nodeId}/force-test`, { method: 'POST' }).catch(() => null);
+    if (resp && resp.ok) setTimeout(() => location.reload(), 1000);
+    else alert('Failed to trigger test');
 }
 </script>
 {% endblock %}
