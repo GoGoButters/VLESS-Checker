@@ -4,13 +4,21 @@ services:
       context: ..
       dockerfile: node/Dockerfile
     image: vpn_checker_node:latest
-    container_name: checker-node
+    # Server-specific values live in node/.env (gitignored, see .env.example):
+    # MASTER_URL, NODE_TOKEN, NODE_NAME, NODE_REGION, checker overrides.
+    container_name: ${NODE_CONTAINER_NAME:-checker-node}
     restart: unless-stopped
+    env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
-      - MASTER_URL=http://host.docker.internal:8000
-      - NODE_TOKEN=your_token_from_settings
-      - NODE_NAME=us-east-worker-1
-      - NODE_REGION=USA
+    mem_limit: ${NODE_MEM:-768m}
+    memswap_limit: ${NODE_MEM:-768m}
+    # Bound container logs: an unbounded json-file log grew to ~10GB on a
+    # worker host and filled the disk (docker defaults to unlimited).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Remove network mode if master running remotely
-    network_mode: host 
+    network_mode: host
