@@ -25,6 +25,7 @@ from config import config  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
                     stream=sys.stdout, force=True)
 logger = logging.getLogger("vpn_checker_node")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40, "off": 999}
 # xhttp / splithttp / httpupgrade most often get through CDNs and whitelists: test them first.
