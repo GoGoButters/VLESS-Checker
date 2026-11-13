@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import logging
 import time
 import zlib
@@ -62,11 +63,29 @@ def _clash_to_links(text: str) -> list[str]:
     return links
 
 
+def _json_strings(obj) -> list[str]:
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        obj = list(obj.values())
+    if isinstance(obj, list):
+        return [s for item in obj for s in _json_strings(item)]
+    return []
+
+
 def extract_links(text: str) -> list[str]:
-    """All share links in a subscription body (plain, base64 or Clash YAML)."""
+    """All share links in a subscription body: plain, base64, Clash YAML, or
+    JSON carrying them in string values (e.g. {"data": "vless://…\\nvless://…"})."""
     text = (text or "").lstrip("﻿").strip()
     if not text:
         return []
+    if text[0] in "{[":
+        try:
+            values = _json_strings(json.loads(text))
+        except ValueError:
+            values = None
+        if values is not None:
+            return [link for value in values for link in extract_links(value)]
     decoded = _maybe_base64(text)
     if decoded:
         text = decoded

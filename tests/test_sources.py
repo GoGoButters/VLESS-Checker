@@ -20,6 +20,15 @@ def test_plain_and_base64_bodies():
     assert sources.extract_links("") == [] and sources.extract_links("<html>nope</html>") == []
 
 
+def test_json_bodies():
+    import json
+    assert sources.extract_links(json.dumps({"data": "\n".join(LINKS)})) == LINKS
+    b64 = base64.b64encode("\n".join(LINKS).encode()).decode()
+    assert sources.extract_links(json.dumps({"result": {"sub": b64}, "count": 3})) == LINKS
+    assert sources.extract_links(json.dumps(LINKS)) == LINKS
+    assert sources.extract_links('{"outbounds": [{"type": "direct"}]}') == []
+
+
 def test_clash_yaml():
     yaml_body = """
 proxies:

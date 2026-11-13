@@ -193,92 +193,138 @@ class Worker:
                 remote_logs.put_back(items)
 
     # ---------------------------------------------------------------- testing
-    async def run_group(self, job: dict, test_urls: list[dict], speed_url: str) -> None:
+    async def start_run(self, job: dict) -> "GroupRun | None":
+        """Fetch the group's remaining proxies and cut them into chunks."""
+        gid, gen = job["group_id"], job["generation"]
+        data = await self._call("GET", f"/api/node/groups/{gid}/proxies", params={"node_id": self.node_id})
+        if data.get("generation") != gen:
+            return None  # changed between /jobs and now; the next poll picks it up
+        urls = sort_by_priority(data.get("proxies") or [])
+        if not urls:
+            await self.status(gid, gen, "idle")
+            return None
+        size = job.get("chunk_size") or len(urls)
+        run = GroupRun(job, [urls[i:i + size] for i in range(0, len(urls), size)])
+        logger.info(f"[{job['name']}] {len(urls)} proxies to test (of {data.get('pool_total')}), "
+                    f"{len(run.chunks)} chunk(s), generation {gen[:8]}")
+        return run
+
+    async def run_chunk(self, run: "GroupRun", test_urls: list[dict], speed_url: str) -> bool:
+        """Test, measure and report the next chunk of a run. True when the run is complete."""
         from geo_checker import detect_proxy_country
         from speed_tester import compute_speed_score, measure_speed
         from tester import run_proxy_checks
 
-        gid, gen = job["group_id"], job["generation"]
-        data = await self._call("GET", f"/api/node/groups/{gid}/proxies", params={"node_id": self.node_id})
-        if data.get("generation") != gen:
-            return  # changed between /jobs and now; the next poll picks it up
-        urls = sort_by_priority(data.get("proxies") or [])
-        if not urls:
-            await self.status(gid, gen, "idle")
-            return
-        size = job.get("chunk_size") or len(urls)
-        chunks = [urls[i:i + size] for i in range(0, len(urls), size)]
+        job, gid, gen = run.job, run.job["group_id"], run.job["generation"]
+        i, chunk = run.next + 1, run.chunks[run.next]
         timeout = float(job.get("http_timeout_s") or 10)
-        logger.info(f"[{job['name']}] {len(urls)} proxies to test (of {data.get('pool_total')}), "
-                    f"{len(chunks)} chunk(s), generation {gen[:8]}")
-        total_passed = 0
-        for i, chunk in enumerate(chunks, start=1):
-            await self.status(gid, gen, "testing", i, len(chunks))
-            results = await run_proxy_checks(chunk, test_urls, job.get("ping_threshold_ms") or 1000, timeout,
-                                             job.get("concurrent_checks_limit") or config.concurrent_checks)
-            passing = [r for r in results if r["tests_passed"] > 0 and r["ping_ms"] > 0]
-            total_passed += len(passing)
+        await self.status(gid, gen, "testing", i, len(run.chunks))
+        results = await run_proxy_checks(chunk, test_urls, job.get("ping_threshold_ms") or 1000, timeout,
+                                         job.get("concurrent_checks_limit") or config.concurrent_checks)
+        passing = [r for r in results if r["tests_passed"] > 0 and r["ping_ms"] > 0]
 
-            top_n = job.get("speed_test_top_n") or 0
-            if top_n and passing:
-                sem = asyncio.Semaphore(SPEED_PARALLEL)
+        top_n = job.get("speed_test_top_n") or 0
+        if top_n and passing:
+            sem = asyncio.Semaphore(SPEED_PARALLEL)
 
-                async def speed(r: dict):
-                    async with sem:
-                        m = await measure_speed(r["raw_url"], timeout_s=max(timeout + 10, 20),
-                                                extra_dl_urls=[speed_url] if speed_url else None)
-                    if m:
-                        r["download_speed_kbps"], r["upload_speed_kbps"] = m
-                ranked = sorted(passing, key=lambda r: (-r["tests_passed"], r["ping_ms"]))[:top_n]
-                logger.info(f"[{job['name']}] chunk {i}: speed test of {len(ranked)} proxies")
-                await asyncio.gather(*(speed(r) for r in ranked))
+            async def speed(r: dict):
+                async with sem:
+                    m = await measure_speed(r["raw_url"], timeout_s=max(timeout + 10, 20),
+                                            extra_dl_urls=[speed_url] if speed_url else None)
+                if m:
+                    r["download_speed_kbps"], r["upload_speed_kbps"] = m
+            ranked = sorted(passing, key=lambda r: (-r["tests_passed"], r["ping_ms"]))[:top_n]
+            logger.info(f"[{job['name']}] chunk {i}: speed test of {len(ranked)} proxies")
+            await asyncio.gather(*(speed(r) for r in ranked))
 
-            if job.get("geo_check_enabled") and passing:
-                logger.info(f"[{job['name']}] chunk {i}: country lookup of {len(passing)} proxies")
-                sem = asyncio.Semaphore(3)
+        if job.get("geo_check_enabled") and passing:
+            logger.info(f"[{job['name']}] chunk {i}: country lookup of {len(passing)} proxies")
+            sem = asyncio.Semaphore(3)
 
-                async def geo(r: dict):
-                    async with sem:
-                        r["country_name"] = await detect_proxy_country(r["raw_url"], timeout_s=max(timeout, 10))
-                await asyncio.gather(*(geo(r) for r in passing))
+            async def geo(r: dict):
+                async with sem:
+                    r["country_name"] = await detect_proxy_country(r["raw_url"], timeout_s=max(timeout, 10))
+            await asyncio.gather(*(geo(r) for r in passing))
 
-            for r in results:
-                r["speed_score"] = compute_speed_score(r["ping_ms"], r["tests_passed"],
-                                                       r.get("download_speed_kbps", 0), r.get("upload_speed_kbps", 0))
-            for j in range(0, len(results), POST_BATCH):
-                await self.post_results(gid, gen, results[j:j + POST_BATCH])
-            logger.info(f"[{job['name']}] chunk {i}/{len(chunks)}: {len(passing)}/{len(chunk)} passed")
-        await self.status(gid, gen, "idle", len(chunks), len(chunks))
-        logger.info(f"[{job['name']}] run complete: {total_passed}/{len(urls)} passed")
+        for r in results:
+            r["speed_score"] = compute_speed_score(r["ping_ms"], r["tests_passed"],
+                                                   r.get("download_speed_kbps", 0), r.get("upload_speed_kbps", 0))
+        for j in range(0, len(results), POST_BATCH):
+            await self.post_results(gid, gen, results[j:j + POST_BATCH])
+        run.next += 1
+        run.passed += len(passing)
+        logger.info(f"[{job['name']}] chunk {i}/{len(run.chunks)}: {len(passing)}/{len(chunk)} passed")
+        if run.next < len(run.chunks):
+            return False
+        await self.status(gid, gen, "idle", len(run.chunks), len(run.chunks))
+        logger.info(f"[{job['name']}] run complete: {run.passed}/{sum(map(len, run.chunks))} passed")
+        return True
+
+    async def step(self, jobs: dict, runs: dict[int, "GroupRun"]) -> bool:
+        """Sync the runs with the panel's jobs, then test ONE chunk of every
+        active group in turn (round-robin), so one group never waits for
+        another group's whole run. Returns True if any work was done."""
+        due = {j["group_id"]: j for j in jobs.get("jobs", []) if j.get("due")}
+        for gid in list(runs):
+            if gid not in due or runs[gid].job["generation"] != due[gid]["generation"]:
+                logger.info(f"[{runs[gid].job['name']}] run superseded on the panel — dropping it")
+                del runs[gid]
+        for gid, job in sorted(due.items()):
+            if gid not in runs:
+                run = await self.start_run(job)
+                if run:
+                    runs[gid] = run
+        speed_url = (f"{self.master}{jobs['speed_test_dl_url']}"
+                     if jobs.get("speed_test_dl_url") and _public_host(self.master) else "")
+        for gid in sorted(runs):
+            run = runs[gid]
+            try:
+                if await self.run_chunk(run, jobs.get("test_urls") or [], speed_url):
+                    del runs[gid]
+            except Stale:
+                logger.info(f"[{run.job['name']}] new generation started on the panel — switching")
+                del runs[gid]
+        return bool(due)
+
+    async def run_group(self, job: dict, test_urls: list[dict], speed_url: str) -> None:
+        """Test one group to the end (used by tests and one-off runs)."""
+        run = await self.start_run(job)
+        while run and not await self.run_chunk(run, test_urls, speed_url):
+            pass
 
     async def run(self) -> None:
         asyncio.create_task(self.heartbeat_loop())
         asyncio.create_task(self.log_loop())
+        runs: dict[int, GroupRun] = {}
         while True:
             try:
                 if self.node_id is None:
+                    runs.clear()
                     await self.register()
                 jobs = await self._call("GET", "/api/node/jobs", params={"node_id": self.node_id})
                 remote_logs.min_level = LEVELS.get(jobs.get("node_log_level", "info"), 20)
-                due = [j for j in jobs.get("jobs", []) if j.get("due")]
-                speed_url = (f"{self.master}{jobs['speed_test_dl_url']}"
-                             if jobs.get("speed_test_dl_url") and _public_host(self.master) else "")
                 if not jobs.get("jobs"):
                     logger.info("No rating group assigned — idle")
-                for job in due:
-                    try:
-                        await self.run_group(job, jobs.get("test_urls") or [], speed_url)
-                    except Stale:
-                        logger.info(f"[{job['name']}] new generation started on the panel — switching")
-                if due:
-                    await asyncio.sleep(2)
-                    continue  # look for more work right away
+                if await self.step(jobs, runs):
+                    await asyncio.sleep(1)
+                    continue  # next round right away
             except NodeGone:
                 self.node_id = None
                 continue
             except Exception as e:  # never die; never drop the registration on a transient error
                 logger.error(f"Worker loop error: {e!r}", exc_info=True)
+                runs.clear()  # refetch the remaining lists: the panel knows what was tested
             await asyncio.sleep(config.poll_interval_s)
+
+
+class GroupRun:
+    """A group's run in progress on this node: its chunks and position."""
+
+    def __init__(self, job: dict, chunks: list[list[str]]):
+        self.job = job
+        self.chunks = chunks
+        self.next = 0
+        self.passed = 0
 
 
 async def main() -> None:
