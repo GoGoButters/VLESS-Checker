@@ -1,16 +1,20 @@
 # VPN Checker — common tasks
 set shell := ["bash", "-cu"]
 
-# Syntax-check all Python modules (no third-party deps required)
+# Syntax-check all Python modules
 check:
-    python3 -m compileall -q main.py scheduler.py database.py subs_manager.py db_maintenance.py
+    python3 -m compileall -q *.py node/*.py tests/*.py
     @echo "compileall OK"
 
-# One-shot SQLite maintenance: orphan cleanup, duplicate indexes, VACUUM
+# Test suite (engine tests need SINGBOX_PATH / XRAY_PATH and openssl)
+test:
+    python3 -m pytest -q -p no:cacheprovider tests/
+
+# One-shot SQLite maintenance (VACUUM when worthwhile, optimize, WAL checkpoint)
 db-maintenance:
     python3 db_maintenance.py
 
-# Build and start the panel (docker compose)
+# Build and start the panel
 up:
     docker compose up -d --build
 
