@@ -134,7 +134,7 @@ class Worker:
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 logger.warning(f"Register failed: {e!r}")
             await asyncio.sleep(delay)
-            delay = min(delay * 2, 15)  # the panel frees the name 90 s after the last heartbeat
+            delay = min(delay * 2, 15)  # the panel frees the name 45 s after the last request
 
     async def post_results(self, gid: int, generation: str, results: list[dict]) -> None:
         """Deliver one chunk; retries transient failures, aborts the run when stale."""
@@ -277,7 +277,7 @@ class Worker:
                 self.node_id = None
                 continue
             except Exception as e:  # never die; never drop the registration on a transient error
-                logger.error(f"Worker loop error: {e!r}")
+                logger.error(f"Worker loop error: {e!r}", exc_info=True)
             await asyncio.sleep(config.poll_interval_s)
 
 

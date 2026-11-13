@@ -37,7 +37,8 @@ from proxy_parsers import get_proxy_identity, proxy_key
 logger = logging.getLogger("vpn_checker.node_api")
 router = APIRouter()
 
-DUPLICATE_WINDOW = timedelta(seconds=90)
+# A live worker talks to the panel at least every 30 s (heartbeat).
+DUPLICATE_WINDOW = timedelta(seconds=45)
 MAX_RESULTS_PER_POST = 5000
 SPEEDTEST_PATH = "/api/speedtest/download"
 

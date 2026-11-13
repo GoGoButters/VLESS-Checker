@@ -182,6 +182,29 @@ async def check_proxy(proxy_url: str, test_urls: list[dict], ping_threshold_ms: 
     return result
 
 
+ENGINE_MEM_MB = _env_float("ENGINE_MEM_MB", 14)      # budget per running engine
+WORKER_RESERVE_MB = _env_float("WORKER_RESERVE_MB", 220)  # worker + speed/geo engines
+
+
+def memory_concurrency_cap() -> int | None:
+    """Concurrent checks the container's memory limit allows (None = no limit).
+
+    Every check runs its own engine process; 50 of them plus the worker
+    exceeded a 768 MB container and the kernel OOM-killed the worker in a
+    loop — the node looked alive but stopped testing.
+    """
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = open(path).read().strip()
+        except OSError:
+            continue
+        if raw == "max" or not raw.isdigit() or int(raw) > 1 << 50:
+            return None
+        limit_mb = int(raw) / 1048576
+        return max(4, int((limit_mb - WORKER_RESERVE_MB) // ENGINE_MEM_MB))
+    return None
+
+
 def hard_timeout_s(http_timeout_s: float) -> float:
     """Upper bound for one check_proxy call, whatever happens inside."""
     return PING_TIMEOUT_S + ENGINE_START_WAIT_S + PROXY_TIME_BUDGET_S + float(http_timeout_s) + 10
@@ -192,6 +215,10 @@ async def run_proxy_checks(proxy_links: list[str], test_urls: list[dict], ping_t
     """Check many proxies concurrently; returns one result per input link."""
     if CONCURRENT_OVERRIDE > 0:
         concurrency = CONCURRENT_OVERRIDE
+    cap = memory_concurrency_cap()
+    if cap is not None and concurrency > cap:
+        logger.info(f"concurrency {concurrency} → {cap}: container memory limit")
+        concurrency = cap
     limit = hard_timeout_s(http_timeout_s)
     status = status if status is not None else {}
     status.update(checked=0, passed=0)
